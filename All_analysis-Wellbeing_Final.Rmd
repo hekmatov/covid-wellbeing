@@ -1,0 +1,2514 @@
+---
+title: "R Notebook Wellbeing"
+output: html_document
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+
+
+
+```{r longitudinal available rater}
+
+### longitudinal available rater model (4 variables) #########
+
+rm(list=ls(all=TRUE)) # Clear working memory
+
+library(psych)
+library(OpenMx)
+source("miFunctions.R")
+
+twinData <- read.table("twinData1-table")
+
+filename <- "avrater_long_4cat"
+sink(paste(filename,".Ro",sep=""), append=FALSE, split=TRUE)
+
+avrater_sel_wellb <- c("preWellb", "lockWellb", "disWellb", "postWellb")
+
+# Select Variables for Analysis
+vars <- avrater_sel_wellb
+nv <- 4 # number of variables
+ntv <- nv*2 # number of total variables
+selVars <- paste(vars,c(rep(1,nv),rep(2,nv)),sep="_")
+defVars   <- c('sex_1','sex_2', "preAge_1","lockAge_1", "disAge_1", "postAge_1",
+               "preAge_2","lockAge_2", "disAge_2", "postAge_2", "FamilyNumber")
+useVars   <- c(selVars,defVars)
+
+agecoVars <- c("preAge_1","lockAge_1", "disAge_1", "postAge_1",
+               "preAge_2","lockAge_2", "disAge_2", "postAge_2")
+
+#change ages to 999 when wellbeing score is missing
+for (i in seq_along(selVars)) {
+  for (j in 1:nrow(twinData)) {
+    twinData[j ,agecoVars[[i]]] <- ifelse(is.na(twinData[j ,selVars[[i]]]), 999, twinData[j ,agecoVars[[i]]])
+  }
+}
+
+
+# Select Data for Analysis based on the zygosity groups
+mzData   <- subset(twinData, (twzyg_1==1 | twzyg_1==3), c(useVars))
+dzData   <- subset(twinData, (twzyg_1==2 | twzyg_1==4 | twzyg_1==5 | twzyg_1==6), c(useVars))
+
+# Generate Descriptive Statistics
+round(colMeans(mzData,na.rm=TRUE),3) 
+round(colMeans(dzData,na.rm=TRUE),3) 
+
+round(cov(mzData,use="complete"),3) 
+round(cov(dzData,use="complete"),3)
+
+
+# Set Starting Values
+svMe <- c(8.4)
+svVa <- c(0.8) # start value for variances MZ
+svB1 <- c(.01) # start values for age beta
+svB2 <- c(.01) # start values for sex beta
+
+# Create Labels
+#Means, per group, per zygosity and overall mean
+
+
+labMeMZ <- labVars("meanMZ",selVars)
+labMeDZ <- labVars("meanDZ",selVars)
+labMe <- labVars("mean",selVars)
+
+#Same for the labels for the covariance and variance
+
+labCvMZ <- labLower("covMZ",ntv)
+labCvDZ <- labLower("covDZ",ntv)
+labCvZ <- labLower("covZ",ntv)
+
+
+labVaMZ <- labDiag("covMZ",ntv)
+labVaDZ <- labDiag("covDZ",ntv)
+labVaZ <- labDiag("covZ",ntv)
+
+# ----------------------------------------------------------------------------------------------------------------------
+# PREPARE MODEL
+# Create Algebra for expected Mean Matrices
+meanMZ <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, values=svMe, labels=labMeMZ, name="meanMZ" )
+meanDZ <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, values=svMe, labels=labMeDZ, name="meanDZ" )
+
+#Create Matrices for Covariates and linear Regression Coefficients
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.preAge_1","data.lockAge_1", "data.disAge_1", "data.postAge_1",
+                                "data.preAge_2","data.lockAge_2", "data.disAge_2", "data.postAge_2"), name="Age" )
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=svB1, label=c("bAge_pre","bAge_lock","bAge_dis","bAge_post",
+                                             "bAge_pre","bAge_lock","bAge_dis","bAge_post"), name="b1" ) # age effects
+
+
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                         labels=c("data.sex_1","data.sex_1", "data.sex_1", "data.sex_1",
+                                  "data.sex_2","data.sex_2", "data.sex_2", "data.sex_2"), name="Sex" )
+
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=svB2, label=c("bSex_pre","bSex_lock","bSex_dis","bSex_post",
+                                             "bSex_pre","bSex_lock","bSex_dis","bSex_post"), name="b2" ) # Sex effects
+
+expMeanMZ <- mxAlgebra( meanMZ + Age*b1 + Sex*b2, name="expMeanMZ") # 
+expMeanDZ <- mxAlgebra( meanDZ + Age*b1 + Sex*b2, name="expMeanDZ") # 
+
+inclusions   <- list (meanMZ, meanDZ, expMeanMZ, expMeanDZ, defSex, pathB2, defAge, pathB1) # 
+
+# Create Algebra for expected Variance/Covariance Matrices
+covMZ <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv), 
+                   labels=labCvMZ, name="covMZ" )
+covDZ <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv), 
+                   labels=labCvDZ, name="covDZ" )
+
+# Create correlation matrices cov2cor
+corMZ  <- mxAlgebra(cov2cor(covMZ), name="corMZ")
+corDZ  <- mxAlgebra(cov2cor(covDZ), name="corDZ")
+
+# Create Data Objects for Multiple Groups
+dataMZ <- mxData( observed=mzData, type="raw" )
+dataDZ <- mxData( observed=dzData, type="raw" )
+
+# Create Expectation Objects for Multiple Groups
+expMZ <- mxExpectationNormal( covariance="covMZ", means="expMeanMZ", dimnames=selVars )
+expDZ <- mxExpectationNormal( covariance="covDZ", means="expMeanDZ", dimnames=selVars )
+funML <- mxFitFunctionML()
+
+# Create Model Objects for Multiple Groups
+modelMZ <- mxModel(covMZ, corMZ, dataMZ, expMZ, inclusions, funML, name="MZ" ) # 
+modelDZ <- mxModel(covDZ, corDZ, dataDZ, expDZ, inclusions, funML, name="DZ" ) #  
+multi <- mxFitFunctionMultigroup( c("MZ","DZ") )
+
+# Create Confidence Interval Objects
+#ciMean <- mxCI( c('MZ.expMeanMZ','DZ.expMeanDZ') )
+#ciCor <- mxCI( c("MZ.corMZ","DZ.corDZ"))
+
+# Build Saturated Model with Confidence Intervals
+modelSAT <- mxModel( "4SAT", modelMZ, modelDZ, multi)
+
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN MODEL
+
+# Run Saturated Model
+fitSAT <- mxTryHard( modelSAT, intervals=F )
+(sumSAT <- summary( fitSAT ))
+
+# Print Goodness-of-fit Statistics & Parameter Estimates
+fitGofs(fitSAT)
+fitEsts(fitSAT)
+
+#Print correlation matrices
+fitSAT$output$algebras$MZ.corMZ
+fitSAT$output$algebras$DZ.corDZ
+
+#------------------------------------------------------------------------------
+#Test assumptions
+#Test means
+#Labels
+mMZ <- c('mMZ_pre','mMZ_lock','mMZ_dis','mMZ_post')
+mDZ <- c('mDZ_pre','mDZ_lock','mDZ_dis','mDZ_post')
+
+# Constrain expected Means to be equal across twin order
+modelEMO  <- mxModel( fitSAT, name="4SATeqMO" )
+modelEMO  <- omxSetParameters( modelEMO, label=labMeMZ, free=TRUE, values=svMe, newlabels= mMZ )
+modelEMO  <- omxSetParameters( modelEMO, label=labMeDZ, free=TRUE, values=svMe, newlabels= mDZ )
+fitEMO    <- mxTryHard( modelEMO, intervals=F )
+mxCompare( fitSAT, fitEMO) 
+summary(fitEMO)
+
+# Constrain expected Means to be equal across twin order and zygosity
+mZ <- c('mZ_pre','mZ_lock','mZ_dis','mZ_post')
+
+modelEMZ <- mxModel( fitEMO, name="4SATeqMOZ" )
+modelEMZ <- omxSetParameters( modelEMZ, labels=mMZ, free=TRUE, values=svMe,  newlabels=mZ )
+modelEMZ <- omxSetParameters( modelEMZ, labels=mDZ, free=TRUE, values=svMe,  newlabels=mZ )
+
+fitEMZ   <- mxTryHard( modelEMZ, intervals=F )
+mxCompare( fitSAT, subs <- list(fitEMO, fitEMZ) )
+
+summary(fitEMZ)
+
+
+# Test Significance of Covariate sex
+modelCOV_s<- mxModel( fitEMZ, name="4SATcov_sex" )
+modelCOV_s<- omxSetParameters( modelCOV_s, label=c('bSex_pre','bSex_lock','bSex_dis','bSex_post'), free=FALSE, values=0 )
+fitCOV_s <- mxRun( modelCOV_s ,intervals=F)
+mxCompare(fitEMZ, fitCOV_s)
+
+# Test Significance of Covariate age
+modelCOV_a<- mxModel( fitEMZ, name="4SATcov_age" )
+modelCOV_a<- omxSetParameters( modelCOV_a, label=c("bAge_pre","bAge_lock","bAge_dis", "bAge_post"), free=FALSE, values=0 )
+fitCOV_a <- mxRun( modelCOV_a ,intervals=F)
+mxCompare(fitEMZ, fitCOV_a)
+
+# Test equality of age coavriate across periods
+modelCOV_ea<- mxModel( fitEMZ, name="4SATecovAge" )
+modelCOV_ea<- omxSetParameters( modelCOV_ea, label=c("bAge_pre","bAge_lock","bAge_dis", "bAge_post"), free=TRUE,
+                                newlabels= "bAge", values = -0.05 )
+fitCOV_ea <- mxRun( modelCOV_ea ,intervals=F)
+mxCompare(fitEMZ, fitCOV_ea)
+
+# Test equality of sex coavriate across periods
+modelCOV_es<- mxModel( fitEMZ, name="4SATecovsex" )
+modelCOV_es<- omxSetParameters( modelCOV_es, label=c('bSex_pre','bSex_lock','bSex_dis','bSex_post'), free=TRUE,
+                                newlabels= "bSex", values = 0  )
+fitCOV_es <- mxRun( modelCOV_es ,intervals=F)
+mxCompare(fitEMZ, fitCOV_es)
+
+
+mxCompare( fitSAT, subs <- list( fitEMO, fitEMZ, fitCOV_s, fitCOV_a, fitCOV_es , fitCOV_ea) )
+
+
+#summary(fitEMs)
+
+
+######################################################################
+#The ACE model starts here
+
+# Set Starting Values 
+svPa      <- .35                    # start value for variance component A
+svPe      <- .2                   # start value for variance component E
+
+
+
+# Create Algebra for expected Mean Matrices
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.preAge_1","data.lockAge_1", "data.disAge_1", "data.postAge_1",
+                                "data.preAge_2","data.lockAge_2", "data.disAge_2", "data.postAge_2"), name="Age" )
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=svB1, label=c("bAge_pre","bAge_lock","bAge_dis","bAge_post",
+                                             "bAge_pre","bAge_lock","bAge_dis","bAge_post"), name="b1" ) # age effects
+
+
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                         labels=c("data.sex_1","data.sex_1", "data.sex_1", "data.sex_1",
+                                  "data.sex_2","data.sex_2", "data.sex_2", "data.sex_2"), name="Sex" )
+
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=svB2, label=c("bSex_pre","bSex_lock","bSex_dis","bSex_post",
+                                             "bSex_pre","bSex_lock","bSex_dis","bSex_post"), name="b2" ) # Sex effects
+
+
+
+meanG      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, values=svMe, labels=labMe, name="meanG" )
+
+expMeanG <- mxAlgebra( meanG + Sex*b2 + Age*b1 , name="expMeanG") # 
+
+inclusions<- list(meanG, expMeanG, defAge, defSex, pathB1, pathB2) #
+
+## Create Matrices for Variance Components
+covA      <- mxMatrix( type="Symm", nrow=nv, ncol=nv, free=TRUE, values=valDiag(svPa,nv),
+                       label=labLower("VA",nv),name="VA", lbound=1e-4 ) #lbound=1e-4, 
+covC      <- mxMatrix( type="Symm", nrow=nv, ncol=nv, free=TRUE, values=valDiag(0.6,nv),
+                       label=labLower("VC",nv),name="VC" )
+covE      <- mxMatrix( type="Symm", nrow=nv, ncol=nv, free=TRUE, values=valDiag(svPe,nv),
+                       label=labLower("VE",nv),name="VE" )
+
+
+## Create Algebra for expected Variance/Covariance Matrices in MZ & DZ twins
+#Total covariance
+covP      <- mxAlgebra( expression= VA+VC+VE, name="V" )
+
+#Covariance in MZ and DZ twins
+covMZ     <- mxAlgebra( expression= VA+VC, name="cMZ" )
+covDZ     <- mxAlgebra( expression= 0.5%x%VA+ VC, name="cDZ" )
+
+#Expected covariance matrices
+expCovMZ  <- mxAlgebra( expression= rbind( cbind(V, cMZ),
+                                           cbind(t(cMZ), V)), name="expCovMZ" ) 
+expCovDZ  <- mxAlgebra( expression= rbind( cbind(V, cDZ),
+                                           cbind(t(cDZ), V)), name="expCovDZ" )
+
+## Create Data Objects for Multiple Groups
+dataMZ    <- mxData( observed=mzData, type="raw" )
+dataDZ    <- mxData( observed=dzData, type="raw" )
+
+
+## Create Expectation Objects for Multiple Groups
+funML     <- mxFitFunctionML() 
+expMZ     <- mxExpectationNormal( covariance="expCovMZ", means="expMeanG", dimnames=selVars ) 
+expDZ     <- mxExpectationNormal( covariance="expCovDZ", means="expMeanG", dimnames=selVars )
+
+## Create Model Objects for Multiple Groups
+pars      <- list( covA, covC, covE, covP) # 
+modelMZ   <- mxModel(inclusions, pars, covMZ, expCovMZ, dataMZ, expMZ, funML, name="MZ" ) 
+modelDZ   <- mxModel(inclusions, pars, covDZ, expCovDZ, dataDZ, expDZ, funML, name="DZ" )
+multi     <- mxFitFunctionMultigroup( c("MZ","DZ"))#, "DZo") ) 
+
+## Create Algebra for Standardization 
+matI      <- mxMatrix( type="Iden", nrow=nv, ncol=nv, name="I" )
+
+## Calculate genetic,  environmental, and phenotypic correlations
+corA      <- mxAlgebra( expression=solve(sqrt(I*VA))%&%VA, name ="rA" ) 
+corC      <- mxAlgebra( expression=solve(sqrt(I*VC))%&%VC, name ="rC" )
+corE      <- mxAlgebra( expression=solve(sqrt(I*VE))%&%VE, name ="rE" )
+corP      <- mxAlgebra( expression=solve(sqrt(I*V))%&%V, name ="rP") 
+
+
+## Create Algebra for Variance Components ( formatting output)
+#Unstandardized variance components
+rowUV     <- rep('UV',nv)
+colUV     <- rep(c('VA','VC','VE','V'),each=nv)
+estUV     <- mxAlgebra( expression=cbind(VA,VC,VE,V), name="UV", dimnames=list(rowUV,colUV) )
+
+#Standardized variance components
+rowSV     <- rep('SV',nv)
+colSV     <- rep(c('SA','SC','SE'),each=nv)
+estSV     <- mxAlgebra( expression=cbind(VA/V,VC/V,VE/V), name="SV", dimnames=list(rowSV,colSV) )
+
+#Correlations
+rowcorr     <- rep('corr',nv)
+colcorr     <- rep(c('rA','rC','rE','rP'),each=nv)
+estcorr     <- mxAlgebra( expression=cbind(rA,rC,rE,rP), name="corr", dimnames=list(rowcorr,colcorr) )
+
+## Create Confidence Interval Objects
+ciUV      <- mxCI( c("UV") )
+ciSV      <- mxCI( c("SV") )
+cicorr      <- mxCI( c("corr") )
+
+## Build Model with Confidence Intervals
+calc      <- list( matI,  corA, corC, corE, corP, estUV, estSV, estcorr, ciSV, cicorr, ciUV)
+modelACE  <- mxModel( "4ACEvc", pars, modelMZ, modelDZ, multi, calc) #
+
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN MODEL
+
+# Run ACE Model
+fitACE    <- mxRun( modelACE, intervals=T)
+(sumACE    <- summary( fitACE ) )
+
+# Print Goodness-of-fit Statistics & Parameter Estimates
+fitGofs(fitACE)
+fitEsts(fitACE)
+
+# Print Covariance & Correlation Matrices
+fitACE$algebras$UV
+fitACE$algebras$SV
+fitACE$algebras$corr
+
+
+# prop% phenotypic covariance due to A #
+fitACE$SV$result[1,2]
+# And now with its confidence interval (will only work if intervals=T in mxRun)
+sumACE$CI[grep(pattern = mxEval(SV[1,2], fitACE),sumACE$CI$estimate),]
+# prop% phenotypic covariance due to C #
+fitACE$SV$result[1,4]
+# And now with its confidence interval (will only work if intervals=T in mxRun)
+sumACE$CI[grep(pattern = mxEval(SV[1,4], fitACE),sumACE$CI$estimate),]
+# prop% phenotypic covariance due to E #
+fitACE$SV$result[1,6]
+# And now with its confidence interval (will only work if intervals=T in mxRun)
+sumACE$CI[grep(pattern = mxEval(SV[1,6], fitACE),sumACE$CI$estimate),]
+# It should add up to 1
+mxEval(SV[1,2]+SV[1,4]+SV[1,6], fitACE)
+
+mxCompare(fitEMZ,fitACE)
+
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN SUBMODELS
+#Step 1: Covariates
+
+# Test Significance of Covariate sex
+modelACECOV_s<- mxModel( fitACE, name="ACEcov_sex" )
+modelACECOV_s<- omxSetParameters( modelACECOV_s, label=c("bSex_pre","bSex_lock","bSex_dis","bSex_post"), free=FALSE, values=0 )
+fitACECOV_s <- mxRun( modelACECOV_s ,intervals=F)
+mxCompare(fitACE, fitACECOV_s)
+
+# Test Significance of Covariate age
+modelACECOV_a<- mxModel( fitACE, name="ACEcov_age" )
+modelACECOV_a<- omxSetParameters( modelACECOV_a, label=c("bAge_pre","bAge_lock","bAge_dis","bAge_post"), free=FALSE, values=0 )
+fitACECOV_a <- mxRun( modelACECOV_a ,intervals=F)
+mxCompare(fitACE, fitACECOV_a)
+
+#Step 2: AE model. Drop all C components
+modelAE   <- mxModel( fitACE, name="twoAEvc" )
+modelAE   <- omxSetParameters( modelAE, labels=labLower("VC",nv), free=FALSE, values=0 )
+fitAE     <- mxRun( modelAE, intervals= F)
+mxCompare(fitACE, fitAE)
+
+fitGofs(fitAE); fitEsts(fitAE)
+(sumAE <- summary(fitAE))
+
+#Standardized covariance matrices and correlation matrices for females and males
+fitAE$algebras$SV
+fitAE$algebras$corr
+
+#Same as above:
+
+# prop% phenotypic covariance due to A #
+sumAE$CI[grep(pattern = mxEval(SV[1,2], fitAE),sumAE$CI$estimate),]
+# prop% phenotypic covariance due to E #
+sumAE$CI[grep(pattern = mxEval(SV[1,6], fitAE),sumAE$CI$estimate),]
+# It should add up to 1
+mxEval(SV[1,2]+SV[1,4]+SV[1,6], fitAE)
+
+
+
+#################
+
+# Run CE model
+modelCE   <- mxModel( fitACE, name="twoCEvc" )
+modelCE   <- omxSetParameters( modelCE, labels=labLower("VA",nv), free=FALSE, values=0 )
+modelCE   <- omxSetParameters( modelCE, labels=labLower("VC",nv), free=TRUE, values=.6 )
+fitCE     <- mxRun( modelCE, intervals=F )
+mxCompare(fitACE,fitCE)
+fitGofs(fitCE); fitEsts(fitCE)
+
+# Run E model
+modelE    <- mxModel( fitAE, name="twoEvc" )
+modelE    <- omxSetParameters( modelE, labels=labLower("VA",nv), free=FALSE, values=0 )
+fitE      <- mxRun( modelE, intervals=F )
+mxCompare(fitAE,fitE)
+fitGofs(fitE); fitEsts(fitE)
+
+# Print Comparative Fit Statistics
+mxCompare( fitACE, nested <- list(fitAE, fitCE, fitE) ) #generate likelihood ratio test
+
+sink()
+#save.image(paste(filename,".Ri",sep=""))
+```
+
+
+
+# psychometric model (prepandemic)
+
+```{r psychometric model (prepandemic)}
+
+
+## Het idee is Sigma (4x4) = Lambda x Psy x Lambda(T) + theta
+## Labda is 4x2 de factor loadings 1 0
+#                                  1 0
+#                                  0 1
+#                                  0 1
+## Psi is  (a2 +c2+e2       0.5/1 a2 +c2
+#         (0.5/1 a2 +c2      a2 +c2+e2)
+## En theta is de residuele matrix en die is 4x4 met op de diagnoaal a2m +c2m+e2m, a2f +c2f+e2f, a2m +c2m+e2m, a2f +c2f+e2f
+# en 0 voor de tw1m,tw1f wordt namelijk al in psy geschat en op de tw1m en tw2m 0.5/1 a2m +c2m etc.
+# Dus je schat per ouder een stuk residuele error. 
+
+
+rm(list=ls(all=TRUE)) # Clear working memory
+
+
+
+# Load Libraries & Options
+
+library(OpenMx)
+library(foreign)
+library(psych); library(polycor)
+source("miFunctions.R")
+
+#Load your data
+
+twinData <- read.table("twinData1-table")
+
+#Check data, how many rows and columns?
+
+describe(twinData, skew=F)
+
+
+# Create Output
+filename <- "1v-SAT-psych-cat-pre"
+sink(paste(filename,".Ro",sep=""), append=FALSE, split=TRUE)
+# ----------------------------------------------------------------------------------------------------------------------
+
+dim(twinData)
+
+# Select Variables for Analysis
+nrat      <- 2                  # number of raters
+nphen     <- 1                  # number of phenotypes
+nfam      <- 2                  # number of family members (twins)
+nfact     <- nphen*nfam         # number of factors to analyze
+ntv      <- nphen*nrat*nfam    # number of variables to analyze
+selVars   <- c("mpreWellb_1",
+               "ppreWellb_1",
+               "mpreWellb_2",
+               "ppreWellb_2")
+
+# Select Covariates for Analysis
+covVars <- c('sex_1','sex_2','mpreAge_1', 'mpreAge_2','ppreAge_1', 'ppreAge_2','FISNumber_1', 'FISNumber_2')
+
+
+
+#change ages to 999 when wellbeing score is missing
+agecoVars <- c('mpreAge_1','ppreAge_1', 'mpreAge_2', 'ppreAge_2')
+for (i in seq_along(selVars)) {
+  for (j in 1:nrow(twinData)) {
+    twinData[j ,agecoVars[[i]]] <- ifelse(is.na(twinData[j ,selVars[[i]]]), 999, twinData[j ,agecoVars[[i]]])
+  }
+}
+
+
+
+# Select Data for Analysis
+mzData <- subset(twinData, (twzyg_1==1 | twzyg_1==3), c(selVars, covVars))
+dzData <- subset(twinData, (twzyg_1==4 | twzyg_1==2 | twzyg_1==5 | twzyg_1==6 ), c(selVars, covVars))
+# Generate Descriptive Statistics
+colMeans(mzData,na.rm=TRUE)
+colMeans(dzData,na.rm=TRUE)
+cov(mzData,use="complete")
+cov(dzData,use="complete")
+
+
+#Saturated model
+
+# Create Labels
+labMeMZ   <- paste("meanMZ",selVars,sep="_")
+labMeDZ   <- paste("meanDZ",selVars,sep="_")
+labMeZ    <- paste("mean",selVars,sep="_")
+labCvMZ   <- labLower("covMZ",ntv)
+labCvDZ   <- labLower("covDZ",ntv)
+labCvZ    <- labLower("covZ",ntv)
+labVaMZ   <- labDiag("covMZ",ntv)
+labVaDZ   <- labDiag("covDZ",ntv)
+labVaZ    <- labDiag("covZ",ntv)
+
+# Set Starting Values
+svBe <- 0.01 # start value for regressions
+svMe <- 8.3 # start value for means
+svVa <- 1.4 # start value for variance
+lbVa <- .0001 # lower bound for variance
+
+
+
+# Create Matrices for Covariates and linear Regression Coefficients
+# Independent variables
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE, 
+                         labels=c('data.sex_1','data.sex_1','data.sex_2','data.sex_2'), name="Sex" )
+
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.mpreAge_1", "data.ppreAge_1", "data.mpreAge_2", "data.ppreAge_2" ), name="Age" )
+
+# Regression Coefficients. Note there must be a beta for each trait. Note: True or False depend on test above
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                        values=svBe, label=c('bSex_m','bSex_f','bSex_m','bSex_f'), name="b2" ) # Sex effects 
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=svBe, label=c("bAge_m","bAge_f","bAge_m","bAge_f"), name="b1" ) # age effects
+
+## Create Algebra for expected Mean Matrices.
+
+meanMZ    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                       values=svMe, labels=labMeMZ, name="meanMZ" )
+meanDZ    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                       values=svMe, labels=labMeDZ, name="meanDZ" )
+
+expMeanMZ <- mxAlgebra( meanMZ + Sex*b2 + Age*b1, name="expMeanMZ")
+expMeanDZ <- mxAlgebra( meanDZ + Sex*b2 + Age*b1, name="expMeanDZ")
+
+inclusions   <- list (meanMZ, meanDZ, expMeanMZ, expMeanDZ, defAge, defSex, pathB1, pathB2 )
+
+
+# Create Algebra for expected Variance/Covariance Matrices
+covMZ     <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv),  labels=labCvMZ, name="covMZ" )
+covDZ     <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv),  labels=labCvDZ, name="covDZ" )
+
+corMZ  <- mxAlgebra(cov2cor(covMZ),name="corMZ")
+corDZ  <- mxAlgebra(cov2cor(covDZ), name="corDZ")
+
+# Create Data Objects for Multiple Groups
+dataMZ    <- mxData( observed=mzData, type="raw" )
+dataDZ    <- mxData( observed=dzData, type="raw" )
+
+# Create Expectation Objects for Multiple Groups
+expMZ     <- mxExpectationNormal( covariance="covMZ", means="expMeanMZ", dimnames=selVars )
+expDZ     <- mxExpectationNormal( covariance="covDZ", means="expMeanDZ", dimnames=selVars )
+funML     <- mxFitFunctionML()
+
+# Create Model Objects for Multiple Groups
+modelMZ   <- mxModel( "MZ", expMeanMZ, covMZ, corMZ,dataMZ, expMZ, inclusions, funML )
+modelDZ   <- mxModel( "DZ", expMeanDZ, covDZ, corDZ,dataDZ, expDZ, inclusions, funML )
+multi     <- mxFitFunctionMultigroup( c("MZ","DZ") )
+
+# Create Confidence Interval Objects
+ciCor <- mxCI( c('MZ.corMZ','DZ.corDZ') )
+ciCov     <- mxCI( c('MZ.covMZ','DZ.covDZ') )
+ciMean    <- mxCI( c('MZ.meanMZ','DZ.meanDZ') )
+
+# Build Saturated Model with Confidence Intervals
+modelSAT  <- mxModel( "mulSATc", modelMZ, modelDZ, multi,ciCor, ciMean )
+
+
+# Run Saturated Model
+fitSAT    <- mxTryHard( modelSAT, intervals=F)
+#fit       <- mxTryHard( fitSAT )
+(sumSAT    <- summary( fitSAT ))
+
+
+(corMZ  <- round(cov2cor(fitSAT$MZ$covMZ$values),3))
+(corDZ  <- round(cov2cor(fitSAT$DZ$covDZ$values),3))
+
+
+
+# RUN SUBMODELS
+# test equal means across twin order
+modelSATemo <- mxModel (fitSAT, name="SATemo")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanMZ_mpreWellb_1", "meanMZ_mpreWellb_2"), free=TRUE, values=8, newlabels = "meanMZ_mpreWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanMZ_ppreWellb_1", "meanMZ_ppreWellb_2"), free=TRUE, values=8, newlabels = "meanMZ_ppreWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanDZ_mpreWellb_1", "meanDZ_mpreWellb_2"), free=TRUE, values=8, newlabels = "meanDZ_mpreWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanDZ_ppreWellb_1", "meanDZ_ppreWellb_2"), free=TRUE, values=8, newlabels = "meanDZ_ppreWellb")
+fitSATemo <- mxRun (modelSATemo, intervals = F)
+fitGofs(fitSATemo); fitEsts(fitSATemo)
+mxCompare (fitSAT,fitSATemo)
+
+#test equal means across zygosity
+modelSATemoz <- mxModel (fitSATemo, name="SATemoz")
+modelSATemoz <- omxSetParameters (modelSATemoz, labels=c("meanMZ_mpreWellb","meanDZ_mpreWellb"), free=TRUE, values=8, newlabels = "mean_mpreWellb")
+modelSATemoz <- omxSetParameters (modelSATemoz, labels=c("meanMZ_ppreWellb","meanDZ_ppreWellb"), free=TRUE, values=8, newlabels = "mean_ppreWellb")
+fitSATemoz <- mxRun (modelSATemoz, intervals = F)
+fitGofs(fitSATemoz); fitEsts(fitSATemoz)
+mxCompare (fitSATemo,fitSATemoz)
+
+#test equal variance across twin order and zygosity
+
+modelSATemvoz <-mxModel(fitSATemoz, name="SATemvoz")
+modelSATemvoz <- omxSetParameters (modelSATemvoz, labels=c("covMZ11","covMZ33","covDZ11","covDZ33"), free=TRUE, values=1.4, newlabels = "v_mpreWellb")
+modelSATemvoz <- omxSetParameters (modelSATemvoz, labels=c("covMZ22","covMZ44","covDZ22","covDZ44"), free=TRUE, values=1.4, newlabels = "v_ppreWellb")
+fitSATemvoz <-mxTryHard (modelSATemvoz, intervals = F)
+mxCompare(fitSATemoz,fitSATemvoz)
+summary(fitSATemvoz)
+
+#test equal same-twin cross-rater covariance across twin order and zygosity
+modelSATstcr <-mxModel(fitSATemvoz, name="SATstcr")
+modelSATstcr <- omxSetParameters (modelSATstcr, labels=c("covMZ21","covMZ43","covDZ21","covDZ43"), free=TRUE, values=.4, newlabels = "c_stcr")
+fitSATstcr <- mxTryHard (modelSATstcr, intervals = F, extraTries = 100)
+mxCompare(fitSATemvoz,fitSATstcr)
+summary(fitSATstcr)
+
+#test equal cross-twin cross-rater covariance across twin order
+modelSATctcr <-mxModel(fitSATstcr, name="SATctcr")
+modelSATctcr <- omxSetParameters(modelSATctcr, labels=c("covMZ41","covMZ32"), free=TRUE, values=.45, newlabels = "c_ctcr_MZ")
+modelSATctcr <- omxSetParameters(modelSATctcr, labels=c("covDZ41","covDZ32"), free=TRUE, values=.5, newlabels = "c_ctcr_DZ")
+fitSATctcr <- mxTryHard (modelSATctcr, intervals = F)
+mxCompare(fitSATemvoz,fitSATctcr)
+summary(fitSATctcr)
+
+# Test Significance of Covariate age
+modelSATCOVa <- mxModel( fitSATctcr, name="SATcova" )
+modelSATCOVa <- omxSetParameters( modelSATCOVa, labels=c("bAge_m","bAge_f"), free=FALSE, values=0 )
+fitSATCOVa <- mxTryHard( modelSATCOVa, intervals = F )
+fitGofs(fitSATCOVa); fitEsts(fitSATCOVa)
+
+
+# Test Significance of Covariate sex
+modelSATCOVs <- mxModel( fitSATctcr, name="SATcovs" )
+modelSATCOVs <- omxSetParameters( modelSATCOVs, labels=c('bSex_m','bSex_f'), free=FALSE, values=0 )
+fitSATCOVs <- mxTryHard( modelSATCOVs, intervals = F )
+fitGofs(fitSATCOVs); fitEsts(fitSATCOVs)
+
+mxCompare( fitSATctcr, subs <- list( fitSATCOVa, fitSATCOVs) )
+
+# Constrain age covariate to be equal across parental raters
+modelSATEbage <- mxModel( fitSATctcr, name="SATebage" )
+modelSATEbage <- omxSetParameters( modelSATEbage, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitSATEbage <- mxTryHard(modelSATEbage, intervals = F)
+fitGofs(fitSATEbage); fitEsts(fitSATEbage)
+mxCompare (fitSATctcr,fitSATEbage)
+
+# Constrain sex covariate to be equal across parental raters
+modelSATEbsex <- mxModel( fitSATctcr, name="SATebsex" )
+modelSATEbsex <- omxSetParameters( modelSATEbsex, label=c("bSex_m","bSex_f"), free=TRUE, values=.06, newlabels='bSex' )
+fitSATEbsex <- mxTryHard(modelSATEbsex, intervals = F, extraTries = 30)
+fitGofs(fitSATEbsex); fitEsts(fitSATEbsex)
+mxCompare (fitSATctcr,fitSATEbsex)
+
+# Constrain both covariate to be equal across parental raters
+modelSATEcov <- mxModel( fitSATEbsex, name="SATecov" )
+modelSATEcov <- omxSetParameters( modelSATEcov, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitSATEcov <- mxRun(modelSATEcov, intervals = F)
+fitGofs(fitSATEcov); fitEsts(fitSATEcov)
+
+mxCompare( fitSATctcr, subs <- list( fitSATCOVa, fitSATCOVs, fitSATEbage, fitSATEbsex, fitSATEcov ) )
+
+
+#Print correlations based on most parsimonious model
+
+(corMZ  <- round(cov2cor(fitSATEcov$MZ$covMZ$values),3))
+(corDZ  <- round(cov2cor(fitSATEcov$DZ$covDZ$values),3))
+
+######################################################################
+#The Pscyhometric ACE model starts here
+
+# Generate Descriptive Statistics
+colMeans(mzData,na.rm=TRUE)
+colMeans(dzData,na.rm=TRUE)
+cov(mzData,use="complete")
+cov(dzData,use="complete")
+# Set Starting Values
+
+svPa <- .4 # start value for path coefficient
+svPe <- .2 # start value for path coefficient for e
+
+# ----------------------------------------------------------------------------------------------------------------------
+# PREPARE ACE MODEL
+# Create Matrices for Covariates and linear Regression Coefficients
+# Independent variables
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE, 
+                         labels=c('data.sex_1','data.sex_1','data.sex_2','data.sex_2'), name="Sex" )
+
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.mpreAge_1", "data.ppreAge_1", "data.mpreAge_2", "data.ppreAge_2" ), name="Age" )
+
+# Regression Coefficients. Note there must be a beta for each trait. Note: True or False depend on test above
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                        values=0.1, label=c('bSex_m','bSex_f','bSex_m','bSex_f'), name="b2" ) # Sex effects 
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=0.1, label=c("bAge_m","bAge_f","bAge_m","bAge_f"), name="b1" ) # age effects
+
+
+# Create Algebra for expected Mean Matrices
+meanG <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, values=svMe, labels=labVars("mean",selVars), name="meanG" )
+expMean <- mxAlgebra( meanG + Sex*b2 + Age*b1, name="expMeanG")
+
+
+## For the agreement:
+
+# Create Matrices for Agreement (latent) Variance Components, i.e. PSY
+covA <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11", name="VA" )
+covC <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11", name="VC" )
+covE <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11", name="VE" )
+
+
+# Create Algebra for latent Variance/Covariance Matrices in MZ & DZ twins
+covP  <- mxAlgebra( expression= VA+VC+VE, name="V" )
+covMZ <- mxAlgebra( expression= VA+VC, name="cMZ" )
+covDZ <- mxAlgebra( expression= 0.5%x%VA+ VC, name="cDZ" )
+PsyMZ <- mxAlgebra( expression= rbind( cbind(V, cMZ), cbind(t(cMZ), V)), name="PsyMZ" )
+PsyDZ <- mxAlgebra( expression= rbind( cbind(V, cDZ), cbind(t(cDZ), V)), name="PsyDZ" )
+
+### Here we specify the loadings of the latent "agreement" variable on the observed variables ###
+Lambda <- mxMatrix(type="Full", nrow=ntv, ncol=nfact, free=F,values=c(1,0,
+                                                                      1,0,
+                                                                      0,1,
+                                                                      0,1), labels=c('x',NA,
+                                                                                     'x',NA,
+                                                                                     NA,'x',
+                                                                                     NA,'x'), byrow=T, name="Lambda")
+
+
+## For MOTHERS DISAGREEMENT
+
+# Create Matrices for Variance Components
+VAm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11m", name="VAm" )
+VCm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11m", name="VCm" )
+VEm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11m", name="VEm" )
+
+# Create Algebra for maternal Variance/Covariance Matrices in MZ & DZ twins
+Vm <- mxAlgebra( expression= VAm+VCm+VEm, name="Vm" )
+cMZm <- mxAlgebra( expression= VAm+VCm, name="cMZm" )
+cDZm <- mxAlgebra( expression= 0.5%x%VAm+ VCm, name="cDZm" )
+
+
+## For FATHERS DISAGREEMENT
+
+# Create Matrices for Variance Components
+VAf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11f", name="VAf" )
+VCf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11f", name="VCf" )
+VEf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11f", name="VEf" )
+
+# Create Algebra for paternal Variance/Covariance Matrices in MZ & DZ twins
+Vf <- mxAlgebra( expression= VAf+VCf+VEf, name="Vf" )
+cMZf <- mxAlgebra( expression= VAf+VCf, name="cMZf" )
+cDZf <- mxAlgebra( expression= 0.5%x%VAf+ VCf, name="cDZf" )
+
+
+### Here we specify the residual matrix for MZ twins ### Dit is dus theta. 
+ThetaMZ <- mxAlgebra(rbind(cbind(Vm    ,null  ,cMZm  ,null),
+                           cbind(null  ,Vf    ,null  ,cMZf),
+                           cbind(cMZm  ,null  ,Vm    ,null),
+                           cbind(null  ,cMZf  ,null  ,Vf)), name="ThetaMZ")
+
+### Here we specify the residual matrix for DZ twins ###  
+ThetaDZ <- mxAlgebra(rbind(cbind(Vm    ,null  ,cDZm  ,null),
+                           cbind(null  ,Vf    ,null  ,cDZf),
+                           cbind(cDZm  ,null  ,Vm    ,null),
+                           cbind(null  ,cDZf  ,null  ,Vf)), name="ThetaDZ")  
+
+null <- mxMatrix( type="Lower", nrow=nphen, ncol=nphen, free=FALSE, values=0, label=c("zero"), name="null" )
+
+### Here we specify the total expected covariance, both agreement and disagreement for MZ's and then DZ's ###  
+
+expCovMZ  <- mxAlgebra( expression=Lambda%*%PsyMZ%*%t(Lambda)+ThetaMZ,name="expCovMZ")
+
+expCovDZ  <- mxAlgebra( expression=Lambda%*%PsyDZ%*%t(Lambda)+ThetaDZ,name="expCovDZ")
+
+
+# Create Data Objects for Multiple Groups
+dataMZ <- mxData( observed=mzData, type="raw" )
+dataDZ <- mxData( observed=dzData, type="raw" )
+
+# Create Expectation Objects for Multiple Groups
+expMZ <- mxExpectationNormal( covariance="expCovMZ", means="expMeanG", dimnames=selVars )
+expDZ <- mxExpectationNormal( covariance="expCovDZ", means="expMeanG", dimnames=selVars )
+funML <- mxFitFunctionML()
+
+# Create Model Objects for Multiple Groups
+mother <- list (VAm, VCm, VEm, Vm, cMZm, cDZm)
+father <- list (VAf, VCf, VEf, Vf, cMZf, cDZf)
+pars <- list( pathB1, pathB2, meanG, covA, covC, covE, covP, Lambda )
+defs <- list( defAge, defSex )
+modelMZ <- mxModel( pars, defs, expMean, covMZ, expCovMZ, dataMZ, expMZ, ThetaMZ, PsyMZ, funML, mother, father, null, name="MZ" )
+modelDZ <- mxModel( pars, defs, expMean, covDZ, expCovDZ, dataDZ, expDZ, ThetaDZ, PsyDZ, funML, mother, father, null, name="DZ" )
+multi <- mxFitFunctionMultigroup( c("MZ","DZ") )
+
+# Create Algebra for Variance Components
+rowUS <- rep('US',nphen)
+colUS <- rep(c('VA','VC','VE','SA','SC','SE'),each=nphen)
+estUS <- mxAlgebra( expression=cbind(VA,VC,VE,VA/V,VC/V,VE/V), name="US", dimnames=list(rowUS,colUS) )
+# Create Confidence Interval Objects
+ciACE <- mxCI( "US[1,1:6]" )
+
+rowSm <- rep('Sm',nphen)
+colSm <- rep(c('VAm','VCm','VEm','SAm','SCm','SEm'),each=nphen)
+estSm <- mxAlgebra( expression=cbind(VAm,VCm,VEm,VAm/Vm,VCm/Vm,VEm/Vm), name="Sm", dimnames=list(rowSm,colSm) )
+ciACEm <- mxCI( "Sm[1,1:6]" )
+
+rowSf <- rep('Sf',nphen)
+colSf <- rep(c('VAf','VCf','VEf','SAf','SCf','SEf'),each=nphen)
+estSf <- mxAlgebra( expression=cbind(VAf,VCf,VEf,VAf/Vf,VCf/Vf,VEf/Vf), name="Sf", dimnames=list(rowSf,colSf) )
+ciACEf <- mxCI( "Sf[1,1:6]" )
+
+comps <- list(estUS, ciACE, estSm, ciACEm, estSf, ciACEf)
+
+# Build Model with Confidence Intervals
+modelPsych <- mxModel( "PsychACE", pars, modelMZ, modelDZ, mother, father, multi, comps)
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN MODEL
+# Run ACE Model
+fitPsych <- mxTryHard( modelPsych, intervals=T )
+sumPsych <- summary( fitPsych )
+sumPsych
+
+# Print Goodness-of-fit Statistics & Parameter Estimates
+fitGofs(fitPsych); fitEsts(fitPsych)
+
+sumCIs <- fitEstCis(fitPsych)
+sumCIs
+
+#store estimate in a dataframe
+psychCIdf_pre <- data.frame(variable = rep(NA,18),rater = c(rep("agreement",6),rep("Umother",6),rep("Ufather",6)), period = rep("pre",18), sumCIs)
+psychCIdf_pre$variable <-c(paste("pre",colUS,sep="_"), paste("pre",colSm,sep="_"),paste("pre",colSf,sep="_"))
+
+save(psychCIdf_pre,file="psychCIdf_pre.Rda")
+
+
+
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN SUBMODELS
+
+modelPsychem <- mxModel (fitPsych, name="Psychem")
+modelPsychem <- omxSetParameters (modelPsychem, labels=c("meanmpreWellb_1", "meanmpreWellb_2"), free=TRUE, values=8, newlabels = "meanpan6_wellbm")
+modelPsychem <- omxSetParameters (modelPsychem, labels=c("meanppreWellb_1", "meanppreWellb_2"), free=TRUE, values=8, newlabels = "meanpan6_wellbf")
+fitPsychem <- mxRun (modelPsychem, intervals = F)
+fitGofs(fitPsychem); fitEsts(fitPsychem)
+mxCompare (fitPsych,fitPsychem)
+
+# Test Significance of Covariate age
+modelCOVa <- mxModel( fitPsych, name="Psychcova" )
+modelCOVa <- omxSetParameters( modelCOVa, labels=c("bAge_m","bAge_f"), free=FALSE, values=0 )
+fitCOVa <- mxRun( modelCOVa, intervals = F )
+fitGofs(fitCOVa); fitEsts(fitCOVa)
+
+
+# Test Significance of Covariate sex
+modelCOVs <- mxModel( fitPsych, name="Psychcovs" )
+modelCOVs <- omxSetParameters( modelCOVs, labels=c('bSex_m','bSex_f'), free=FALSE, values=0 )
+fitCOVs <- mxTryHard( modelCOVs, intervals = F )
+fitGofs(fitCOVs); fitEsts(fitCOVs)
+
+mxCompare( fitPsych, subs <- list( fitCOVa, fitCOVs) )
+
+# Constrain age covariate to be equal across parental raters
+modelEbage <- mxModel( fitPsych, name="Psychebage" )
+modelEbage <- omxSetParameters( modelEbage, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitEbage <- mxRun(modelEbage, intervals = F)
+fitGofs(fitEbage); fitEsts(fitEbage)
+mxCompare (fitPsych,fitEbage)
+
+# Constrain sex covariate to be equal across parental raters
+modelEbsex <- mxModel( fitPsych, name="Psychebsex" )
+modelEbsex <- omxSetParameters( modelEbsex, label=c("bSex_m","bSex_f"), free=TRUE, values=.06, newlabels='bSex' )
+fitEbsex <- mxTryHard(modelEbsex, intervals = F)
+fitGofs(fitEbsex); fitEsts(fitEbsex)
+mxCompare (fitPsych,fitEbsex)
+
+# Constrain both covariate to be equal across parental raters
+modelEcov <- mxModel( fitEbsex, name="Psychecov" )
+modelEcov <- omxSetParameters( modelEcov, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitEcov <- mxRun(modelEcov, intervals = F)
+fitGofs(fitEcov); fitEsts(fitEcov)
+
+# Add equal means
+
+modelPsychemcov <- mxModel (fitEcov, name="Psychemcov")
+modelPsychemcov <- omxSetParameters (modelPsychemcov, labels=c("meanmpreWellb_1", "meanmpreWellb_2"), free=TRUE, values=8, newlabels = "meanpan6_wellbm")
+modelPsychemcov <- omxSetParameters (modelPsychemcov, labels=c("meanppreWellb_1", "meanppreWellb_2"), free=TRUE, values=8, newlabels = "meanpan6_wellbf")
+fitPsychemcov <- mxRun (modelPsychemcov, intervals = F)
+fitGofs(fitPsychemcov); fitEsts(fitPsychemcov)
+mxCompare (fitPsych,fitPsychemcov)
+
+mxCompare( fitPsych, subs <- list( fitCOVa, fitCOVs, fitEbage, fitEbsex, fitEcov, fitPsychemcov ) )
+
+sink()
+#save.image(paste(filename,".Ri",sep=""))
+
+```
+
+# psychometric model (lockdown)
+
+```{r psychometric model (lockdown)}
+
+################### preiod category Lockdown ##########################
+
+rm(list=ls(all=TRUE)) # Clear working memory
+
+
+
+# Load Libraries & Options
+
+library(OpenMx)
+library(foreign)
+library(psych); library(polycor)
+source("miFunctions.R")
+
+#Load your data
+
+twinData <- read.table("twinData1-table")
+
+#Check data, how many rows and columns?
+
+describe(twinData, skew=F)
+
+
+# Create Output
+filename <- "1v-SAT-psych-cat-lock"
+sink(paste(filename,".Ro",sep=""), append=FALSE, split=TRUE)
+# ----------------------------------------------------------------------------------------------------------------------
+
+dim(twinData)
+
+# Select Variables for Analysis
+nrat      <- 2                  # number of raters
+nphen     <- 1                  # number of phenotypes
+nfam      <- 2                  # number of family members (twins)
+nfact     <- nphen*nfam         # number of factors to analyze
+ntv      <- nphen*nrat*nfam    # number of variables to analyze
+selVars   <- c("mlockWellb_1",
+               "plockWellb_1",
+               "mlockWellb_2",
+               "plockWellb_2")
+
+# Select Covariates for Analysis
+covVars <- c('sex_1','sex_2','mlockAge_1', 'mlockAge_2','plockAge_1', 'plockAge_2','FISNumber_1', 'FISNumber_2')
+
+#change ages to 999 when wellbeing score is missing
+agecoVars <- c('mlockAge_1','plockAge_1', 'mlockAge_2', 'plockAge_2')
+for (i in seq_along(selVars)) {
+  for (j in 1:nrow(twinData)) {
+    twinData[j ,agecoVars[[i]]] <- ifelse(is.na(twinData[j ,selVars[[i]]]), 999, twinData[j ,agecoVars[[i]]])
+  }
+}
+
+
+# Select Data for Analysis
+mzData <- subset(twinData, (twzyg_1==1 | twzyg_1==3), c(selVars, covVars))
+dzData <- subset(twinData, (twzyg_1==4 | twzyg_1==2 | twzyg_1==5 | twzyg_1==6 ), c(selVars, covVars))
+# Generate Descriptive Statistics
+colMeans(mzData,na.rm=TRUE)
+colMeans(dzData,na.rm=TRUE)
+cov(mzData,use="complete")
+cov(dzData,use="complete")
+
+
+#Saturated model
+
+# Create Labels
+labMeMZ   <- paste("meanMZ",selVars,sep="_")
+labMeDZ   <- paste("meanDZ",selVars,sep="_")
+labMeZ    <- paste("mean",selVars,sep="_")
+labCvMZ   <- labLower("covMZ",ntv)
+labCvDZ   <- labLower("covDZ",ntv)
+labCvZ    <- labLower("covZ",ntv)
+labVaMZ   <- labDiag("covMZ",ntv)
+labVaDZ   <- labDiag("covDZ",ntv)
+labVaZ    <- labDiag("covZ",ntv)
+
+# Set Starting Values
+svBe <- 0.01 # start value for regressions
+svMe <- 8.3 # start value for means
+svVa <- 1.4 # start value for variance
+lbVa <- .0001 # lower bound for variance
+
+
+
+# Create Matrices for Covariates and linear Regression Coefficients
+# Independent variables
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE, 
+                         labels=c('data.sex_1','data.sex_1','data.sex_2','data.sex_2'), name="Sex" )
+
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.mlockAge_1", "data.plockAge_1", "data.mlockAge_2", "data.plockAge_2" ), name="Age" )
+
+# Regression Coefficients. Note there must be a beta for each trait. Note: True or False depend on test above
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                        values=svBe, label=c('bSex_m','bSex_f','bSex_m','bSex_f'), name="b2" ) # Sex effects 
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=svBe, label=c("bAge_m","bAge_f","bAge_m","bAge_f"), name="b1" ) # age effects
+
+## Create Algebra for expected Mean Matrices.
+
+meanMZ    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                       values=svMe, labels=labMeMZ, name="meanMZ" )
+meanDZ    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                       values=svMe, labels=labMeDZ, name="meanDZ" )
+
+expMeanMZ <- mxAlgebra( meanMZ + Sex*b2 + Age*b1, name="expMeanMZ")
+expMeanDZ <- mxAlgebra( meanDZ + Sex*b2 + Age*b1, name="expMeanDZ")
+
+inclusions   <- list (meanMZ, meanDZ, expMeanMZ, expMeanDZ, defAge, defSex, pathB1, pathB2 )
+
+
+# Create Algebra for expected Variance/Covariance Matrices
+covMZ     <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv),  labels=labCvMZ, name="covMZ" )
+covDZ     <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv),  labels=labCvDZ, name="covDZ" )
+
+corMZ  <- mxAlgebra(cov2cor(covMZ),name="corMZ")
+corDZ  <- mxAlgebra(cov2cor(covDZ), name="corDZ")
+
+# Create Data Objects for Multiple Groups
+dataMZ    <- mxData( observed=mzData, type="raw" )
+dataDZ    <- mxData( observed=dzData, type="raw" )
+
+# Create Expectation Objects for Multiple Groups
+expMZ     <- mxExpectationNormal( covariance="covMZ", means="expMeanMZ", dimnames=selVars )
+expDZ     <- mxExpectationNormal( covariance="covDZ", means="expMeanDZ", dimnames=selVars )
+funML     <- mxFitFunctionML()
+
+# Create Model Objects for Multiple Groups
+modelMZ   <- mxModel( "MZ", expMeanMZ, covMZ, corMZ,dataMZ, expMZ, inclusions, funML )
+modelDZ   <- mxModel( "DZ", expMeanDZ, covDZ, corDZ,dataDZ, expDZ, inclusions, funML )
+multi     <- mxFitFunctionMultigroup( c("MZ","DZ") )
+
+# Create Confidence Interval Objects
+ciCor <- mxCI( c('MZ.corMZ','DZ.corDZ') )
+ciCov     <- mxCI( c('MZ.covMZ','DZ.covDZ') )
+ciMean    <- mxCI( c('MZ.meanMZ','DZ.meanDZ') )
+
+# Build Saturated Model with Confidence Intervals
+modelSAT  <- mxModel( "mulSATc", modelMZ, modelDZ, multi,ciCor, ciMean )
+
+
+# Run Saturated Model
+fitSAT    <- mxTryHard( modelSAT, intervals=F)
+#fit       <- mxTryHard( fitSAT )
+(sumSAT    <- summary( fitSAT ))
+
+
+(corMZ  <- round(cov2cor(fitSAT$MZ$covMZ$values),3))
+(corDZ  <- round(cov2cor(fitSAT$DZ$covDZ$values),3))
+
+
+
+# RUN SUBMODELS
+# test equal means across twin order
+modelSATemo <- mxModel (fitSAT, name="SATemo")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanMZ_mlockWellb_1", "meanMZ_mlockWellb_2"), free=TRUE, values=8, newlabels = "meanMZ_mlockWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanMZ_plockWellb_1", "meanMZ_plockWellb_2"), free=TRUE, values=8, newlabels = "meanMZ_plockWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanDZ_mlockWellb_1", "meanDZ_mlockWellb_2"), free=TRUE, values=8, newlabels = "meanDZ_mlockWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanDZ_plockWellb_1", "meanDZ_plockWellb_2"), free=TRUE, values=8, newlabels = "meanDZ_plockWellb")
+fitSATemo <- mxRun (modelSATemo, intervals = F)
+fitGofs(fitSATemo); fitEsts(fitSATemo)
+mxCompare (fitSAT,fitSATemo)
+
+#test equal means across zygosity
+modelSATemoz <- mxModel (fitSATemo, name="SATemoz")
+modelSATemoz <- omxSetParameters (modelSATemoz, labels=c("meanMZ_mlockWellb","meanDZ_mlockWellb"), free=TRUE, values=8, newlabels = "mean_mlockWellb")
+modelSATemoz <- omxSetParameters (modelSATemoz, labels=c("meanMZ_plockWellb","meanDZ_plockWellb"), free=TRUE, values=8, newlabels = "mean_plockWellb")
+fitSATemoz <- mxRun (modelSATemoz, intervals = T)
+fitGofs(fitSATemoz); fitEsts(fitSATemoz)
+mxCompare (fitSATemo,fitSATemoz)
+
+
+sumCIs <- fitEstCis(fitSATemoz)
+
+meanCIs_lock <- sumCIs[(nrow(sumCIs) - 1):nrow(sumCIs), ]
+save(meanCIs_lock,file="meanCIs_lock.Rda")
+
+
+#test equal variance across twin order and zygosity
+
+modelSATemvoz <-mxModel(fitSATemoz, name="SATemvoz")
+modelSATemvoz <- omxSetParameters (modelSATemvoz, labels=c("covMZ11","covMZ33","covDZ11","covDZ33"), free=TRUE, values=1.4, newlabels = "v_mlockWellb")
+modelSATemvoz <- omxSetParameters (modelSATemvoz, labels=c("covMZ22","covMZ44","covDZ22","covDZ44"), free=TRUE, values=1.4, newlabels = "v_plockWellb")
+fitSATemvoz <-mxTryHard (modelSATemvoz, intervals = F)
+mxCompare(fitSATemoz,fitSATemvoz)
+summary(fitSATemvoz)
+
+#test equal same-twin cross-rater covariance across twin order and zygosity
+modelSATstcr <-mxModel(fitSATemvoz, name="SATstcr")
+modelSATstcr <- omxSetParameters (modelSATstcr, labels=c("covMZ21","covMZ43","covDZ21","covDZ43"), free=TRUE, values=.4, newlabels = "c_stcr")
+fitSATstcr <- mxTryHard (modelSATstcr, intervals = F, extraTries = 100)
+mxCompare(fitSATemvoz,fitSATstcr)
+summary(fitSATstcr)
+
+#test equal cross-twin cross-rater covariance across twin order
+modelSATctcr <-mxModel(fitSATstcr, name="SATctcr")
+modelSATctcr <- omxSetParameters(modelSATctcr, labels=c("covMZ41","covMZ32"), free=TRUE, values=.45, newlabels = "c_ctcr_MZ")
+modelSATctcr <- omxSetParameters(modelSATctcr, labels=c("covDZ41","covDZ32"), free=TRUE, values=.5, newlabels = "c_ctcr_DZ")
+fitSATctcr <- mxTryHard (modelSATctcr, intervals = F)
+mxCompare(fitSATemvoz,fitSATctcr)
+summary(fitSATctcr)
+
+# Test Significance of Covariate age
+modelSATCOVa <- mxModel( fitSATctcr, name="SATcova" )
+modelSATCOVa <- omxSetParameters( modelSATCOVa, labels=c("bAge_m","bAge_f"), free=FALSE, values=0 )
+fitSATCOVa <- mxTryHard( modelSATCOVa, intervals = F )
+fitGofs(fitSATCOVa); fitEsts(fitSATCOVa)
+
+
+# Test Significance of Covariate sex
+modelSATCOVs <- mxModel( fitSATctcr, name="SATcovs" )
+modelSATCOVs <- omxSetParameters( modelSATCOVs, labels=c('bSex_m','bSex_f'), free=FALSE, values=0 )
+fitSATCOVs <- mxTryHard( modelSATCOVs, intervals = F )
+fitGofs(fitSATCOVs); fitEsts(fitSATCOVs)
+
+mxCompare( fitSATctcr, subs <- list( fitSATCOVa, fitSATCOVs) )
+
+# Constrain age covariate to be equal across parental raters
+modelSATEbage <- mxModel( fitSATctcr, name="SATebage" )
+modelSATEbage <- omxSetParameters( modelSATEbage, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitSATEbage <- mxTryHard(modelSATEbage, intervals = F)
+fitGofs(fitSATEbage); fitEsts(fitSATEbage)
+mxCompare (fitSATctcr,fitSATEbage)
+
+# Constrain sex covariate to be equal across parental raters
+modelSATEbsex <- mxModel( fitSATctcr, name="SATebsex" )
+modelSATEbsex <- omxSetParameters( modelSATEbsex, label=c("bSex_m","bSex_f"), free=TRUE, values=.06, newlabels='bSex' )
+fitSATEbsex <- mxTryHard(modelSATEbsex, intervals = F, extraTries = 30)
+fitGofs(fitSATEbsex); fitEsts(fitSATEbsex)
+mxCompare (fitSATctcr,fitSATEbsex)
+
+# Constrain both covariate to be equal across parental raters
+modelSATEcov <- mxModel( fitSATEbsex, name="SATecov" )
+modelSATEcov <- omxSetParameters( modelSATEcov, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitSATEcov <- mxTryHard(modelSATEcov, intervals = F)
+fitGofs(fitSATEcov); fitEsts(fitSATEcov)
+
+mxCompare( fitSATctcr, subs <- list( fitSATCOVa, fitSATCOVs, fitSATEbage, fitSATEbsex, fitSATEcov ) )
+
+
+#Print correlations based on most parsimonious model
+
+(corMZ  <- round(cov2cor(fitSATEcov$MZ$covMZ$values),3))
+(corDZ  <- round(cov2cor(fitSATEcov$DZ$covDZ$values),3))
+
+######################################################################
+#The Pscyhometric ACE model starts here
+
+# Generate Descriptive Statistics
+colMeans(mzData,na.rm=TRUE)
+colMeans(dzData,na.rm=TRUE)
+cov(mzData,use="complete")
+cov(dzData,use="complete")
+# Set Starting Values
+
+svPa <- .4 # start value for path coefficient
+svPe <- .2 # start value for path coefficient for e
+
+# ----------------------------------------------------------------------------------------------------------------------
+# PREPARE ACE MODEL
+# Create Matrices for Covariates and linear Regression Coefficients
+# Independent variables
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE, 
+                         labels=c('data.sex_1','data.sex_1','data.sex_2','data.sex_2'), name="Sex" )
+
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.mlockAge_1", "data.plockAge_1", "data.mlockAge_2", "dataplockAge_2" ), name="Age" )
+
+# Regression Coefficients. Note there must be a beta for each trait. Note: True or False depend on test above
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                        values=0.1, label=c('bSex_m','bSex_f','bSex_m','bSex_f'), name="b2" ) # Sex effects 
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=0.1, label=c("bAge_m","bAge_f","bAge_m","bAge_f"), name="b1" ) # age effects
+
+
+# (this needs to move) Create Algebra for expected Mean Matrices
+meanG <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, values=svMe, labels=labVars("mean",selVars), name="meanG" )
+expMean <- mxAlgebra( meanG + Sex*b2 + Age*b1, name="expMeanG")
+
+
+## For the agreement:
+
+# Create Matrices for Agreement (latent) Variance Components, i.e. PSY
+covA <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11", name="VA" )
+covC <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11", name="VC" )
+covE <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11", name="VE" )
+
+
+# Create Algebra for latent Variance/Covariance Matrices in MZ & DZ twins
+covP  <- mxAlgebra( expression= VA+VC+VE, name="V" )
+covMZ <- mxAlgebra( expression= VA+VC, name="cMZ" )
+covDZ <- mxAlgebra( expression= 0.5%x%VA+ VC, name="cDZ" )
+PsyMZ <- mxAlgebra( expression= rbind( cbind(V, cMZ), cbind(t(cMZ), V)), name="PsyMZ" )
+PsyDZ <- mxAlgebra( expression= rbind( cbind(V, cDZ), cbind(t(cDZ), V)), name="PsyDZ" )
+
+### Here we specify the loadings of the latent "agreement" variable on the observed variables ###
+Lambda <- mxMatrix(type="Full", nrow=ntv, ncol=nfact, free=F,values=c(1,0,
+                                                                      1,0,
+                                                                      0,1,
+                                                                      0,1), labels=c('x',NA,
+                                                                                     'x',NA,
+                                                                                     NA,'x',
+                                                                                     NA,'x'), byrow=T, name="Lambda")
+
+
+## For MOTHERS DISAGREEMENT
+
+# Create Matrices for Variance Components
+VAm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11m", name="VAm" )
+VCm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11m", name="VCm" )
+VEm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11m", name="VEm" )
+
+# Create Algebra for maternal Variance/Covariance Matrices in MZ & DZ twins
+Vm <- mxAlgebra( expression= VAm+VCm+VEm, name="Vm" )
+cMZm <- mxAlgebra( expression= VAm+VCm, name="cMZm" )
+cDZm <- mxAlgebra( expression= 0.5%x%VAm+ VCm, name="cDZm" )
+
+
+## For FATHERS DISAGREEMENT
+
+# Create Matrices for Variance Components
+VAf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11f", name="VAf" )
+VCf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11f", name="VCf" )
+VEf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11f", name="VEf" )
+
+# Create Algebra for paternal Variance/Covariance Matrices in MZ & DZ twins
+Vf <- mxAlgebra( expression= VAf+VCf+VEf, name="Vf" )
+cMZf <- mxAlgebra( expression= VAf+VCf, name="cMZf" )
+cDZf <- mxAlgebra( expression= 0.5%x%VAf+ VCf, name="cDZf" )
+
+
+### Here we specify the residual matrix for MZ twins ### Dit is dus theta. 
+ThetaMZ <- mxAlgebra(rbind(cbind(Vm    ,null  ,cMZm  ,null),
+                           cbind(null  ,Vf    ,null  ,cMZf),
+                           cbind(cMZm  ,null  ,Vm    ,null),
+                           cbind(null  ,cMZf  ,null  ,Vf)), name="ThetaMZ")
+
+### Here we specify the residual matrix for DZ twins ###  
+ThetaDZ <- mxAlgebra(rbind(cbind(Vm    ,null  ,cDZm  ,null),
+                           cbind(null  ,Vf    ,null  ,cDZf),
+                           cbind(cDZm  ,null  ,Vm    ,null),
+                           cbind(null  ,cDZf  ,null  ,Vf)), name="ThetaDZ")  
+
+null <- mxMatrix( type="Lower", nrow=nphen, ncol=nphen, free=FALSE, values=0, label=c("zero"), name="null" )
+
+### Here we specify the total expected covariance, both agreement and disagreement for MZ's and then DZ's ###  
+
+expCovMZ  <- mxAlgebra( expression=Lambda%*%PsyMZ%*%t(Lambda)+ThetaMZ,name="expCovMZ")
+
+expCovDZ  <- mxAlgebra( expression=Lambda%*%PsyDZ%*%t(Lambda)+ThetaDZ,name="expCovDZ")
+
+
+# Create Data Objects for Multiple Groups
+dataMZ <- mxData( observed=mzData, type="raw" )
+dataDZ <- mxData( observed=dzData, type="raw" )
+
+# Create Expectation Objects for Multiple Groups
+expMZ <- mxExpectationNormal( covariance="expCovMZ", means="expMeanG", dimnames=selVars )
+expDZ <- mxExpectationNormal( covariance="expCovDZ", means="expMeanG", dimnames=selVars )
+funML <- mxFitFunctionML()
+
+# Create Model Objects for Multiple Groups
+mother <- list (VAm, VCm, VEm, Vm, cMZm, cDZm)
+father <- list (VAf, VCf, VEf, Vf, cMZf, cDZf)
+pars <- list( pathB1, pathB2, meanG, covA, covC, covE, covP, Lambda )
+defs <- list( defAge, defSex )
+modelMZ <- mxModel( pars, defs, expMean, covMZ, expCovMZ, dataMZ, expMZ, ThetaMZ, PsyMZ, funML, mother, father, null, name="MZ" )
+modelDZ <- mxModel( pars, defs, expMean, covDZ, expCovDZ, dataDZ, expDZ, ThetaDZ, PsyDZ, funML, mother, father, null, name="DZ" )
+multi <- mxFitFunctionMultigroup( c("MZ","DZ") )
+
+# Create Algebra for Variance Components
+rowUS <- rep('US',nphen)
+colUS <- rep(c('VA','VC','VE','SA','SC','SE'),each=nphen)
+estUS <- mxAlgebra( expression=cbind(VA,VC,VE,VA/V,VC/V,VE/V), name="US", dimnames=list(rowUS,colUS) )
+# Create Confidence Interval Objects
+ciACE <- mxCI( "US[1,1:6]" )
+
+rowSm <- rep('Sm',nphen)
+colSm <- rep(c('VAm','VCm','VEm','SAm','SCm','SEm'),each=nphen)
+estSm <- mxAlgebra( expression=cbind(VAm,VCm,VEm,VAm/Vm,VCm/Vm,VEm/Vm), name="Sm", dimnames=list(rowSm,colSm) )
+ciACEm <- mxCI( "Sm[1,1:6]" )
+
+rowSf <- rep('Sf',nphen)
+colSf <- rep(c('VAf','VCf','VEf','SAf','SCf','SEf'),each=nphen)
+estSf <- mxAlgebra( expression=cbind(VAf,VCf,VEf,VAf/Vf,VCf/Vf,VEf/Vf), name="Sf", dimnames=list(rowSf,colSf) )
+ciACEf <- mxCI( "Sf[1,1:6]" )
+
+comps <- list(estUS, ciACE, estSm, ciACEm, estSf, ciACEf)
+
+# Build Model with Confidence Intervals
+modelPsych <- mxModel( "PsychACE", pars, modelMZ, modelDZ, mother, father, multi, comps)
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN MODEL
+# Run ACE Model
+fitPsych <- mxTryHard( modelPsych, intervals=T )
+sumPsych <- summary( fitPsych )
+sumPsych
+
+# Print Goodness-of-fit Statistics & Parameter Estimates
+fitGofs(fitPsych); fitEsts(fitPsych)
+
+sumCIs <- fitEstCis(fitPsych)
+sumCIs
+
+#store estimate in a dataframe
+psychCIdf_lock <- data.frame(variable = rep(NA,18),rater = c(rep("agreement",6),rep("Umother",6),rep("Ufather",6)), period = rep("lock",18), sumCIs)
+psychCIdf_lock$variable <-c(paste("lock",colUS,sep="_"), paste("lock",colSm,sep="_"),paste("lock",colSf,sep="_"))
+
+save(psychCIdf_lock,file="psychCIdf_lock.Rda")
+
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN SUBMODELS
+
+modelPsychem <- mxModel (fitPsych, name="Psychem")
+modelPsychem <- omxSetParameters (modelPsychem, labels=c("meanmlockWellb_1", "meanmlockWellb_2"), free=TRUE, values=8, newlabels = "meanpan6_wellbm")
+modelPsychem <- omxSetParameters (modelPsychem, labels=c("meanplockWellb_1", "meanplockWellb_2"), free=TRUE, values=8, newlabels = "meanpan6_wellbf")
+fitPsychem <- mxRun (modelPsychem, intervals = F)
+fitGofs(fitPsychem); fitEsts(fitPsychem)
+mxCompare (fitPsych,fitPsychem)
+
+# Test Significance of Covariate age
+modelCOVa <- mxModel( fitPsych, name="Psychcova" )
+modelCOVa <- omxSetParameters( modelCOVa, labels=c("bAge_m","bAge_f"), free=FALSE, values=0 )
+fitCOVa <- mxRun( modelCOVa, intervals = F )
+fitGofs(fitCOVa); fitEsts(fitCOVa)
+
+
+# Test Significance of Covariate sex
+modelCOVs <- mxModel( fitPsych, name="Psychcovs" )
+modelCOVs <- omxSetParameters( modelCOVs, labels=c('bSex_m','bSex_f'), free=FALSE, values=0 )
+fitCOVs <- mxTryHard( modelCOVs, intervals = F )
+fitGofs(fitCOVs); fitEsts(fitCOVs)
+
+mxCompare( fitPsych, subs <- list( fitCOVa, fitCOVs) )
+
+# Constrain age covariate to be equal across parental raters
+modelEbage <- mxModel( fitPsych, name="Psychebage" )
+modelEbage <- omxSetParameters( modelEbage, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitEbage <- mxRun(modelEbage, intervals = F)
+fitGofs(fitEbage); fitEsts(fitEbage)
+mxCompare (fitPsych,fitEbage)
+
+# Constrain sex covariate to be equal across parental raters
+modelEbsex <- mxModel( fitPsych, name="Psychebsex" )
+modelEbsex <- omxSetParameters( modelEbsex, label=c("bSex_m","bSex_f"), free=TRUE, values=.06, newlabels='bSex' )
+fitEbsex <- mxTryHard(modelEbsex, intervals = F)
+fitGofs(fitEbsex); fitEsts(fitEbsex)
+mxCompare (fitPsych,fitEbsex)
+
+# Constrain both covariate to be equal across parental raters
+modelEcov <- mxModel( fitEbsex, name="Psychecov" )
+modelEcov <- omxSetParameters( modelEcov, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitEcov <- mxRun(modelEcov, intervals = F)
+fitGofs(fitEcov); fitEsts(fitEcov)
+
+# Add equal means
+
+modelPsychemcov <- mxModel (fitEcov, name="Psychemcov")
+modelPsychemcov <- omxSetParameters (modelPsychemcov, labels=c("meanmlockWellb_1", "meanmlockWellb_2"), free=TRUE, values=8, newlabels = "meanmlockWellb")
+modelPsychemcov <- omxSetParameters (modelPsychemcov, labels=c("meanplockWellb_1", "meanplockWellb_2"), free=TRUE, values=8, newlabels = "meanplockWellb")
+fitPsychemcov <- mxRun (modelPsychemcov, intervals = F)
+fitGofs(fitPsychemcov); fitEsts(fitPsychemcov)
+mxCompare (fitPsych,fitPsychemcov)
+
+mxCompare( fitPsych, subs <- list( fitCOVa, fitCOVs, fitEbage, fitEbsex, fitEcov, fitPsychemcov ) )
+
+sink()
+#save.image(paste(filename,".Ri",sep=""))
+```
+
+
+# psychometric model (distancing)
+
+```{r psychometric model (distancing}
+
+################### preiod category distancing ##########################
+
+rm(list=ls(all=TRUE)) # Clear working memory
+
+
+
+# Load Libraries & Options
+
+library(OpenMx)
+library(foreign)
+library(psych); library(polycor)
+source("miFunctions.R")
+
+#Load your data
+
+twinData <- read.table("twinData1-table")
+
+#Check data, how many rows and columns?
+
+describe(twinData, skew=F)
+
+
+# Create Output
+filename <- "1v-SAT-psych-cat-dis"
+sink(paste(filename,".Ro",sep=""), append=FALSE, split=TRUE)
+# ----------------------------------------------------------------------------------------------------------------------
+
+dim(twinData)
+
+# Select Variables for Analysis
+nrat      <- 2                  # number of raters
+nphen     <- 1                  # number of phenotypes
+nfam      <- 2                  # number of family members (twins)
+nfact     <- nphen*nfam         # number of factors to analyze
+ntv      <- nphen*nrat*nfam    # number of variables to analyze
+selVars   <- c("mdisWellb_1",
+               "pdisWellb_1",
+               "mdisWellb_2",
+               "pdisWellb_2")
+
+# Select Covariates for Analysis
+covVars <- c('sex_1','sex_2','mdisAge_1', 'mdisAge_2','pdisAge_1', 'pdisAge_2', 'FISNumber_1', 'FISNumber_2')
+
+#change ages to 999 when wellbeing score is missing
+agecoVars <- c('mdisAge_1','pdisAge_1', 'mdisAge_2', 'pdisAge_2')
+for (i in seq_along(selVars)) {
+  for (j in 1:nrow(twinData)) {
+    twinData[j ,agecoVars[[i]]] <- ifelse(is.na(twinData[j ,selVars[[i]]]), 999, twinData[j ,agecoVars[[i]]])
+  }
+}
+
+# Select Data for Analysis
+mzData <- subset(twinData, (twzyg_1==1 | twzyg_1==3), c(selVars, covVars))
+dzData <- subset(twinData, (twzyg_1==4 | twzyg_1==2 | twzyg_1==5 | twzyg_1==6 ), c(selVars, covVars))
+# Generate Descriptive Statistics
+colMeans(mzData,na.rm=TRUE)
+colMeans(dzData,na.rm=TRUE)
+cov(mzData,use="complete")
+cov(dzData,use="complete")
+
+
+#Saturated model
+
+# Create Labels
+labMeMZ   <- paste("meanMZ",selVars,sep="_")
+labMeDZ   <- paste("meanDZ",selVars,sep="_")
+labMeZ    <- paste("mean",selVars,sep="_")
+labCvMZ   <- labLower("covMZ",ntv)
+labCvDZ   <- labLower("covDZ",ntv)
+labCvZ    <- labLower("covZ",ntv)
+labVaMZ   <- labDiag("covMZ",ntv)
+labVaDZ   <- labDiag("covDZ",ntv)
+labVaZ    <- labDiag("covZ",ntv)
+
+# Set Starting Values
+svBe <- 0.01 # start value for regressions
+svMe <- 8.3 # start value for means
+svVa <- 1.4 # start value for variance
+lbVa <- .0001 # lower bound for variance
+
+
+
+# Create Matrices for Covariates and linear Regression Coefficients
+# Independent variables
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE, 
+                         labels=c('data.sex_1','data.sex_1','data.sex_2','data.sex_2'), name="Sex" )
+
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.mdisAge_1", "data.pdisAge_1", "data.mdisAge_2", "data.pdisAge_2" ), name="Age" )
+
+# Regression Coefficients. Note there must be a beta for each trait. Note: True or False depend on test above
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                        values=svBe, label=c('bSex_m','bSex_f','bSex_m','bSex_f'), name="b2" ) # Sex effects 
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=svBe, label=c("bAge_m","bAge_f","bAge_m","bAge_f"), name="b1" ) # age effects
+
+## Create Algebra for expected Mean Matrices.
+
+meanMZ    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                       values=svMe, labels=labMeMZ, name="meanMZ" )
+meanDZ    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                       values=svMe, labels=labMeDZ, name="meanDZ" )
+
+expMeanMZ <- mxAlgebra( meanMZ + Sex*b2 + Age*b1, name="expMeanMZ")
+expMeanDZ <- mxAlgebra( meanDZ + Sex*b2 + Age*b1, name="expMeanDZ")
+
+inclusions   <- list (meanMZ, meanDZ, expMeanMZ, expMeanDZ, defAge, defSex, pathB1, pathB2 )
+
+
+# Create Algebra for expected Variance/Covariance Matrices
+covMZ     <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv),  labels=labCvMZ, name="covMZ" )
+covDZ     <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv),  labels=labCvDZ, name="covDZ" )
+
+corMZ  <- mxAlgebra(cov2cor(covMZ),name="corMZ")
+corDZ  <- mxAlgebra(cov2cor(covDZ), name="corDZ")
+
+# Create Data Objects for Multiple Groups
+dataMZ    <- mxData( observed=mzData, type="raw" )
+dataDZ    <- mxData( observed=dzData, type="raw" )
+
+# Create Expectation Objects for Multiple Groups
+expMZ     <- mxExpectationNormal( covariance="covMZ", means="expMeanMZ", dimnames=selVars )
+expDZ     <- mxExpectationNormal( covariance="covDZ", means="expMeanDZ", dimnames=selVars )
+funML     <- mxFitFunctionML()
+
+# Create Model Objects for Multiple Groups
+modelMZ   <- mxModel( "MZ", expMeanMZ, covMZ, corMZ,dataMZ, expMZ, inclusions, funML )
+modelDZ   <- mxModel( "DZ", expMeanDZ, covDZ, corDZ,dataDZ, expDZ, inclusions, funML )
+multi     <- mxFitFunctionMultigroup( c("MZ","DZ") )
+
+# Create Confidence Interval Objects
+ciCor <- mxCI( c('MZ.corMZ','DZ.corDZ') )
+ciCov     <- mxCI( c('MZ.covMZ','DZ.covDZ') )
+ciMean    <- mxCI( c('MZ.meanMZ','DZ.meanDZ') )
+
+# Build Saturated Model with Confidence Intervals
+modelSAT  <- mxModel( "mulSATc", modelMZ, modelDZ, multi,ciCor, ciMean )
+
+
+# Run Saturated Model
+fitSAT    <- mxTryHard( modelSAT, intervals=F)
+#fit       <- mxTryHard( fitSAT )
+(sumSAT    <- summary( fitSAT ))
+
+
+(corMZ  <- round(cov2cor(fitSAT$MZ$covMZ$values),3))
+(corDZ  <- round(cov2cor(fitSAT$DZ$covDZ$values),3))
+
+
+
+# RUN SUBMODELS
+# test equal means across twin order
+modelSATemo <- mxModel (fitSAT, name="SATemo")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanMZ_mdisWellb_1", "meanMZ_mdisWellb_2"), free=TRUE, values=8, newlabels = "meanMZ_mdisWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanMZ_pdisWellb_1", "meanMZ_pdisWellb_2"), free=TRUE, values=8, newlabels = "meanMZ_pdisWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanDZ_mdisWellb_1", "meanDZ_mdisWellb_2"), free=TRUE, values=8, newlabels = "meanDZ_mdisWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanDZ_pdisWellb_1", "meanDZ_pdisWellb_2"), free=TRUE, values=8, newlabels = "meanDZ_pdisWellb")
+fitSATemo <- mxRun (modelSATemo, intervals = F)
+fitGofs(fitSATemo); fitEsts(fitSATemo)
+mxCompare (fitSAT,fitSATemo)
+
+#test equal means across zygosity
+modelSATemoz <- mxModel (fitSATemo, name="SATemoz")
+modelSATemoz <- omxSetParameters (modelSATemoz, labels=c("meanMZ_mdisWellb","meanDZ_mdisWellb"), free=TRUE, values=8, newlabels = "mean_mdisWellb")
+modelSATemoz <- omxSetParameters (modelSATemoz, labels=c("meanMZ_pdisWellb","meanDZ_pdisWellb"), free=TRUE, values=8, newlabels = "mean_pdisWellb")
+fitSATemoz <- mxRun (modelSATemoz, intervals = T)
+fitGofs(fitSATemoz); fitEsts(fitSATemoz)
+mxCompare (fitSATemo,fitSATemoz)
+
+sumCIs <- fitEstCis(fitSATemoz)
+
+meanCIs_dis <- sumCIs[(nrow(sumCIs) - 1):nrow(sumCIs), ]
+save(meanCIs_dis,file="meanCIs_dis.Rda")
+
+
+#test equal variance across twin order and zygosity
+
+modelSATemvoz <-mxModel(fitSATemoz, name="SATemvoz")
+modelSATemvoz <- omxSetParameters (modelSATemvoz, labels=c("covMZ11","covMZ33","covDZ11","covDZ33"), free=TRUE, values=1.4, newlabels = "v_mdisWellb")
+modelSATemvoz <- omxSetParameters (modelSATemvoz, labels=c("covMZ22","covMZ44","covDZ22","covDZ44"), free=TRUE, values=1.4, newlabels = "v_pdisWellb")
+fitSATemvoz <-mxTryHard (modelSATemvoz, intervals = F)
+mxCompare(fitSATemoz,fitSATemvoz)
+summary(fitSATemvoz)
+
+#test equal same-twin cross-rater covariance across twin order and zygosity
+modelSATstcr <-mxModel(fitSATemvoz, name="SATstcr")
+modelSATstcr <- omxSetParameters (modelSATstcr, labels=c("covMZ21","covMZ43","covDZ21","covDZ43"), free=TRUE, values=.3, newlabels = "c_stcr")
+fitSATstcr <- mxTryHard (modelSATstcr, intervals = F, extraTries = 100)
+mxCompare(fitSATemvoz,fitSATstcr)
+summary(fitSATstcr)
+
+#test equal cross-twin cross-rater covariance across twin order
+modelSATctcr <-mxModel(fitSATstcr, name="SATctcr")
+modelSATctcr <- omxSetParameters(modelSATctcr, labels=c("covMZ41","covMZ32"), free=TRUE, values=.3, newlabels = "c_ctcr_MZ")
+modelSATctcr <- omxSetParameters(modelSATctcr, labels=c("covDZ41","covDZ32"), free=TRUE, values=.2, newlabels = "c_ctcr_DZ")
+fitSATctcr <- mxTryHard (modelSATctcr, intervals = F,extraTries = 50)
+mxCompare(fitSATemvoz,fitSATctcr)
+summary(fitSATctcr)
+
+# Test Significance of Covariate age
+modelSATCOVa <- mxModel( fitSATctcr, name="SATcova" )
+modelSATCOVa <- omxSetParameters( modelSATCOVa, labels=c("bAge_m","bAge_f"), free=FALSE, values=0 )
+fitSATCOVa <- mxTryHard( modelSATCOVa, intervals = F )
+fitGofs(fitSATCOVa); fitEsts(fitSATCOVa)
+
+
+# Test Significance of Covariate sex
+modelSATCOVs <- mxModel( fitSATctcr, name="SATcovs" )
+modelSATCOVs <- omxSetParameters( modelSATCOVs, labels=c('bSex_m','bSex_f'), free=FALSE, values=0 )
+fitSATCOVs <- mxTryHard( modelSATCOVs, intervals = F )
+fitGofs(fitSATCOVs); fitEsts(fitSATCOVs)
+
+mxCompare( fitSATctcr, subs <- list( fitSATCOVa, fitSATCOVs) )
+
+# Constrain age covariate to be equal across parental raters
+modelSATEbage <- mxModel( fitSATctcr, name="SATebage" )
+modelSATEbage <- omxSetParameters( modelSATEbage, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitSATEbage <- mxTryHard(modelSATEbage, intervals = F)
+fitGofs(fitSATEbage); fitEsts(fitSATEbage)
+mxCompare (fitSATctcr,fitSATEbage)
+
+# Constrain sex covariate to be equal across parental raters
+modelSATEbsex <- mxModel( fitSATctcr, name="SATebsex" )
+modelSATEbsex <- omxSetParameters( modelSATEbsex, label=c("bSex_m","bSex_f"), free=TRUE, values=.06, newlabels='bSex' )
+fitSATEbsex <- mxTryHard(modelSATEbsex, intervals = F, extraTries = 30)
+fitGofs(fitSATEbsex); fitEsts(fitSATEbsex)
+mxCompare (fitSATctcr,fitSATEbsex)
+
+# Constrain both covariate to be equal across parental raters
+modelSATEcov <- mxModel( fitSATEbsex, name="SATecov" )
+modelSATEcov <- omxSetParameters( modelSATEcov, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitSATEcov <- mxRun(modelSATEcov, intervals = F)
+fitGofs(fitSATEcov); fitEsts(fitSATEcov)
+
+mxCompare( fitSATctcr, subs <- list( fitSATCOVa, fitSATCOVs, fitSATEbage, fitSATEbsex, fitSATEcov ) )
+
+
+#Print correlations based on most parsimonious model
+
+(corMZ  <- round(cov2cor(fitSATEcov$MZ$covMZ$values),3))
+(corDZ  <- round(cov2cor(fitSATEcov$DZ$covDZ$values),3))
+
+######################################################################
+#The Pscyhometric ACE model starts here
+
+# Generate Descriptive Statistics
+colMeans(mzData,na.rm=TRUE)
+colMeans(dzData,na.rm=TRUE)
+cov(mzData,use="complete")
+cov(dzData,use="complete")
+# Set Starting Values
+
+svPa <- .4 # start value for path coefficient
+svPe <- .2 # start value for path coefficient for e
+
+# ----------------------------------------------------------------------------------------------------------------------
+# PREPARE ACE MODEL
+# Create Matrices for Covariates and linear Regression Coefficients
+# Independent variables
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE, 
+                         labels=c('data.sex_1','data.sex_1','data.sex_2','data.sex_2'), name="Sex" )
+
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.mdisAge_1", "data.pdisAge_1", "data.mdisAge_2", "data.pdisAge_2" ), name="Age" )
+
+# Regression Coefficients. Note there must be a beta for each trait. Note: True or False depend on test above
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                        values=0.1, label=c('bSex_m','bSex_f','bSex_m','bSex_f'), name="b2" ) # Sex effects 
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=0.1, label=c("bAge_m","bAge_f","bAge_m","bAge_f"), name="b1" ) # age effects
+
+
+# (this needs to move) Create Algebra for expected Mean Matrices
+meanG <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, values=svMe, labels=labVars("mean",selVars), name="meanG" )
+expMean <- mxAlgebra( meanG + Sex*b2 + Age*b1, name="expMeanG")
+
+
+## For the agreement:
+
+# Create Matrices for Agreement (latent) Variance Components, i.e. PSY
+covA <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11", name="VA" )
+covC <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11", name="VC" )
+covE <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11", name="VE" )
+
+
+# Create Algebra for latent Variance/Covariance Matrices in MZ & DZ twins
+covP  <- mxAlgebra( expression= VA+VC+VE, name="V" )
+covMZ <- mxAlgebra( expression= VA+VC, name="cMZ" )
+covDZ <- mxAlgebra( expression= 0.5%x%VA+ VC, name="cDZ" )
+PsyMZ <- mxAlgebra( expression= rbind( cbind(V, cMZ), cbind(t(cMZ), V)), name="PsyMZ" )
+PsyDZ <- mxAlgebra( expression= rbind( cbind(V, cDZ), cbind(t(cDZ), V)), name="PsyDZ" )
+
+### Here we specify the loadings of the latent "agreement" variable on the observed variables ###
+Lambda <- mxMatrix(type="Full", nrow=ntv, ncol=nfact, free=F,values=c(1,0,
+                                                                      1,0,
+                                                                      0,1,
+                                                                      0,1), labels=c('x',NA,
+                                                                                     'x',NA,
+                                                                                     NA,'x',
+                                                                                     NA,'x'), byrow=T, name="Lambda")
+
+
+## For MOTHERS DISAGREEMENT
+
+# Create Matrices for Variance Components
+VAm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11m", name="VAm" )
+VCm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11m", name="VCm" )
+VEm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11m", name="VEm" )
+
+# Create Algebra for maternal Variance/Covariance Matrices in MZ & DZ twins
+Vm <- mxAlgebra( expression= VAm+VCm+VEm, name="Vm" )
+cMZm <- mxAlgebra( expression= VAm+VCm, name="cMZm" )
+cDZm <- mxAlgebra( expression= 0.5%x%VAm+ VCm, name="cDZm" )
+
+
+## For FATHERS DISAGREEMENT
+
+# Create Matrices for Variance Components
+VAf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11f", name="VAf" )
+VCf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11f", name="VCf" )
+VEf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11f", name="VEf" )
+
+# Create Algebra for paternal Variance/Covariance Matrices in MZ & DZ twins
+Vf <- mxAlgebra( expression= VAf+VCf+VEf, name="Vf" )
+cMZf <- mxAlgebra( expression= VAf+VCf, name="cMZf" )
+cDZf <- mxAlgebra( expression= 0.5%x%VAf+ VCf, name="cDZf" )
+
+
+### Here we specify the residual matrix for MZ twins ### Dit is dus theta. 
+ThetaMZ <- mxAlgebra(rbind(cbind(Vm    ,null  ,cMZm  ,null),
+                           cbind(null  ,Vf    ,null  ,cMZf),
+                           cbind(cMZm  ,null  ,Vm    ,null),
+                           cbind(null  ,cMZf  ,null  ,Vf)), name="ThetaMZ")
+
+### Here we specify the residual matrix for DZ twins ###  
+ThetaDZ <- mxAlgebra(rbind(cbind(Vm    ,null  ,cDZm  ,null),
+                           cbind(null  ,Vf    ,null  ,cDZf),
+                           cbind(cDZm  ,null  ,Vm    ,null),
+                           cbind(null  ,cDZf  ,null  ,Vf)), name="ThetaDZ")  
+
+null <- mxMatrix( type="Lower", nrow=nphen, ncol=nphen, free=FALSE, values=0, label=c("zero"), name="null" )
+
+### Here we specify the total expected covariance, both agreement and disagreement for MZ's and then DZ's ###  
+
+expCovMZ  <- mxAlgebra( expression=Lambda%*%PsyMZ%*%t(Lambda)+ThetaMZ,name="expCovMZ")
+
+expCovDZ  <- mxAlgebra( expression=Lambda%*%PsyDZ%*%t(Lambda)+ThetaDZ,name="expCovDZ")
+
+
+# Create Data Objects for Multiple Groups
+dataMZ <- mxData( observed=mzData, type="raw" )
+dataDZ <- mxData( observed=dzData, type="raw" )
+
+# Create Expectation Objects for Multiple Groups
+expMZ <- mxExpectationNormal( covariance="expCovMZ", means="expMeanG", dimnames=selVars )
+expDZ <- mxExpectationNormal( covariance="expCovDZ", means="expMeanG", dimnames=selVars )
+funML <- mxFitFunctionML()
+
+# Create Model Objects for Multiple Groups
+mother <- list (VAm, VCm, VEm, Vm, cMZm, cDZm)
+father <- list (VAf, VCf, VEf, Vf, cMZf, cDZf)
+pars <- list( pathB1, pathB2, meanG, covA, covC, covE, covP, Lambda )
+defs <- list( defAge, defSex )
+modelMZ <- mxModel( pars, defs, expMean, covMZ, expCovMZ, dataMZ, expMZ, ThetaMZ, PsyMZ, funML, mother, father, null, name="MZ" )
+modelDZ <- mxModel( pars, defs, expMean, covDZ, expCovDZ, dataDZ, expDZ, ThetaDZ, PsyDZ, funML, mother, father, null, name="DZ" )
+multi <- mxFitFunctionMultigroup( c("MZ","DZ") )
+
+# Create Algebra for Variance Components
+rowUS <- rep('US',nphen)
+colUS <- rep(c('VA','VC','VE','SA','SC','SE'),each=nphen)
+estUS <- mxAlgebra( expression=cbind(VA,VC,VE,VA/V,VC/V,VE/V), name="US", dimnames=list(rowUS,colUS) )
+# Create Confidence Interval Objects
+ciACE <- mxCI( "US[1,1:6]" )
+
+rowSm <- rep('Sm',nphen)
+colSm <- rep(c('VAm','VCm','VEm','SAm','SCm','SEm'),each=nphen)
+estSm <- mxAlgebra( expression=cbind(VAm,VCm,VEm,VAm/Vm,VCm/Vm,VEm/Vm), name="Sm", dimnames=list(rowSm,colSm) )
+ciACEm <- mxCI( "Sm[1,1:6]" )
+
+rowSf <- rep('Sf',nphen)
+colSf <- rep(c('VAf','VCf','VEf','SAf','SCf','SEf'),each=nphen)
+estSf <- mxAlgebra( expression=cbind(VAf,VCf,VEf,VAf/Vf,VCf/Vf,VEf/Vf), name="Sf", dimnames=list(rowSf,colSf) )
+ciACEf <- mxCI( "Sf[1,1:6]" )
+
+comps <- list(estUS, ciACE, estSm, ciACEm, estSf, ciACEf)
+
+# Build Model with Confidence Intervals
+modelPsych <- mxModel( "PsychACE", pars, modelMZ, modelDZ, mother, father, multi, comps)
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN MODEL
+# Run ACE Model
+fitPsych <- mxTryHard( modelPsych, intervals=T )
+sumPsych <- summary( fitPsych )
+sumPsych
+
+# Print Goodness-of-fit Statistics & Parameter Estimates
+fitGofs(fitPsych); fitEsts(fitPsych)
+sumCIs <- fitEstCis(fitPsych)
+sumCIs
+
+#store estimate in a dataframe
+psychCIdf_dis <- data.frame(variable = rep(NA,18),rater = c(rep("agreement",6),rep("Umother",6),rep("Ufather",6)), period = rep("dis",18), sumCIs)
+psychCIdf_dis$variable <-c(paste("dis",colUS,sep="_"), paste("dis",colSm,sep="_"),paste("dis",colSf,sep="_"))
+
+save(psychCIdf_dis,file="psychCIdf_dis.Rda")
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN SUBMODELS
+
+modelPsychem <- mxModel (fitPsych, name="Psychem")
+modelPsychem <- omxSetParameters (modelPsychem, labels=c("meanmdisWellb_1", "meanmdisWellb_2"), free=TRUE, values=8, newlabels = "meanmdisWellb")
+modelPsychem <- omxSetParameters (modelPsychem, labels=c("meanpdisWellb_1", "meanpdisWellb_2"), free=TRUE, values=8, newlabels = "meanpdisWellb")
+fitPsychem <- mxRun (modelPsychem, intervals = F)
+fitGofs(fitPsychem); fitEsts(fitPsychem)
+mxCompare (fitPsych,fitPsychem)
+
+# Test Significance of Covariate age
+modelCOVa <- mxModel( fitPsych, name="Psychcova" )
+modelCOVa <- omxSetParameters( modelCOVa, labels=c("bAge_m","bAge_f"), free=FALSE, values=0 )
+fitCOVa <- mxRun( modelCOVa, intervals = F )
+fitGofs(fitCOVa); fitEsts(fitCOVa)
+
+
+# Test Significance of Covariate sex
+modelCOVs <- mxModel( fitPsych, name="Psychcovs" )
+modelCOVs <- omxSetParameters( modelCOVs, labels=c('bSex_m','bSex_f'), free=FALSE, values=0 )
+fitCOVs <- mxTryHard( modelCOVs, intervals = F )
+fitGofs(fitCOVs); fitEsts(fitCOVs)
+
+mxCompare( fitPsych, subs <- list( fitCOVa, fitCOVs) )
+
+# Constrain age covariate to be equal across parental raters
+modelEbage <- mxModel( fitPsych, name="Psychebage" )
+modelEbage <- omxSetParameters( modelEbage, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitEbage <- mxRun(modelEbage, intervals = F)
+fitGofs(fitEbage); fitEsts(fitEbage)
+mxCompare (fitPsych,fitEbage)
+
+# Constrain sex covariate to be equal across parental raters
+modelEbsex <- mxModel( fitPsych, name="Psychebsex" )
+modelEbsex <- omxSetParameters( modelEbsex, label=c("bSex_m","bSex_f"), free=TRUE, values=.06, newlabels='bSex' )
+fitEbsex <- mxTryHard(modelEbsex, intervals = F)
+fitGofs(fitEbsex); fitEsts(fitEbsex)
+mxCompare (fitPsych,fitEbsex)
+
+# Constrain both covariate to be equal across parental raters
+modelEcov <- mxModel( fitEbsex, name="Psychecov" )
+modelEcov <- omxSetParameters( modelEcov, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitEcov <- mxRun(modelEcov, intervals = F)
+fitGofs(fitEcov); fitEsts(fitEcov)
+
+# Add equal means
+
+modelPsychemcov <- mxModel (fitEcov, name="Psychemcov")
+modelPsychemcov <- omxSetParameters (modelPsychemcov, labels=c("meanmdisWellb_1", "meanmdisWellb_2"), free=TRUE, values=8, newlabels = "meanmdisWellb")
+modelPsychemcov <- omxSetParameters (modelPsychemcov, labels=c("meanpdisWellb_1", "meanpdisWellb_2"), free=TRUE, values=8, newlabels = "meanpdisWellb")
+fitPsychemcov <- mxRun (modelPsychemcov, intervals = F)
+fitGofs(fitPsychemcov); fitEsts(fitPsychemcov)
+mxCompare (fitPsych,fitPsychemcov)
+
+mxCompare( fitPsych, subs <- list( fitCOVa, fitCOVs, fitEbage, fitEbsex, fitEcov, fitPsychemcov ) )
+
+sink()
+#save.image(paste(filename,".Ri",sep=""))
+
+```
+
+
+# psychometric model (post-pandemic)
+
+```{r psychometric model (post-pandemic)}
+
+################### preiod category post-pandemic ##########################
+
+rm(list=ls(all=TRUE)) # Clear working memory
+
+
+
+# Load Libraries & Options
+
+library(OpenMx)
+library(foreign)
+library(psych); library(polycor)
+source("miFunctions.R")
+
+#Load your data
+
+twinData <- read.table("twinData1-table")
+
+#Check data, how many rows and columns?
+
+describe(twinData, skew=F)
+
+
+# Create Output
+filename <- "1v-SAT-psych-cat-post"
+sink(paste(filename,".Ro",sep=""), append=FALSE, split=TRUE)
+# ----------------------------------------------------------------------------------------------------------------------
+
+dim(twinData)
+
+# Select Variables for Analysis
+nrat      <- 2                  # number of raters
+nphen     <- 1                  # number of phenotypes
+nfam      <- 2                  # number of family members (twins)
+nfact     <- nphen*nfam         # number of factors to analyze
+ntv      <- nphen*nrat*nfam    # number of variables to analyze
+selVars   <- c("mpostWellb_1",
+               "ppostWellb_1",
+               "mpostWellb_2",
+               "ppostWellb_2")
+
+# Select Covariates for Analysis
+covVars <- c('sex_1','sex_2','mpostAge_1', 'mpostAge_2','ppostAge_1', 'ppostAge_2','FISNumber_1', 'FISNumber_2')
+
+#change ages to 999 when wellbeing score is missing
+agecoVars <- c('mpostAge_1','ppostAge_1', 'mpostAge_2', 'ppostAge_2')
+for (i in seq_along(selVars)) {
+  for (j in 1:nrow(twinData)) {
+    twinData[j ,agecoVars[[i]]] <- ifelse(is.na(twinData[j ,selVars[[i]]]), 999, twinData[j ,agecoVars[[i]]])
+  }
+}
+
+# Select Data for Analysis
+mzData <- subset(twinData, (twzyg_1==1 | twzyg_1==3), c(selVars, covVars))
+dzData <- subset(twinData, (twzyg_1==4 | twzyg_1==2 | twzyg_1==5 | twzyg_1==6 ), c(selVars, covVars))
+# Generate Descriptive Statistics
+colMeans(mzData,na.rm=TRUE)
+colMeans(dzData,na.rm=TRUE)
+cov(mzData,use="complete")
+cov(dzData,use="complete")
+
+
+#Saturated model
+
+# Create Labels
+labMeMZ   <- paste("meanMZ",selVars,sep="_")
+labMeDZ   <- paste("meanDZ",selVars,sep="_")
+labMeZ    <- paste("mean",selVars,sep="_")
+labCvMZ   <- labLower("covMZ",ntv)
+labCvDZ   <- labLower("covDZ",ntv)
+labCvZ    <- labLower("covZ",ntv)
+labVaMZ   <- labDiag("covMZ",ntv)
+labVaDZ   <- labDiag("covDZ",ntv)
+labVaZ    <- labDiag("covZ",ntv)
+
+# Set Starting Values
+svBe <- 0.01 # start value for regressions
+svMe <- 8.3 # start value for means
+svVa <- 1.4 # start value for variance
+lbVa <- .0001 # lower bound for variance
+
+
+
+# Create Matrices for Covariates and linear Regression Coefficients
+# Independent variables
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE, 
+                         labels=c('data.sex_1','data.sex_1','data.sex_2','data.sex_2'), name="Sex" )
+
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.mpostAge_1", "data.ppostAge_1", "data.mpostAge_2", "data.ppostAge_2" ), name="Age" )
+
+# Regression Coefficients. Note there must be a beta for each trait. Note: True or False depend on test above
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                        values=svBe, label=c('bSex_m','bSex_f','bSex_m','bSex_f'), name="b2" ) # Sex effects 
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=svBe, label=c("bAge_m","bAge_f","bAge_m","bAge_f"), name="b1" ) # age effects
+
+## Create Algebra for expected Mean Matrices.
+
+meanMZ    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                       values=svMe, labels=labMeMZ, name="meanMZ" )
+meanDZ    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                       values=svMe, labels=labMeDZ, name="meanDZ" )
+
+expMeanMZ <- mxAlgebra( meanMZ + Sex*b2 + Age*b1, name="expMeanMZ")
+expMeanDZ <- mxAlgebra( meanDZ + Sex*b2 + Age*b1, name="expMeanDZ")
+
+inclusions   <- list (meanMZ, meanDZ, expMeanMZ, expMeanDZ, defAge, defSex, pathB1, pathB2 )
+
+
+# Create Algebra for expected Variance/Covariance Matrices
+covMZ     <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv), lbound=1e-4 ,  labels=labCvMZ, name="covMZ" )
+covDZ     <- mxMatrix( type="Symm", nrow=ntv, ncol=ntv, free=TRUE, values=valDiag(svVa,ntv), lbound=1e-4 ,  labels=labCvDZ, name="covDZ" )
+
+corMZ  <- mxAlgebra(cov2cor(covMZ),name="corMZ")
+corDZ  <- mxAlgebra(cov2cor(covDZ), name="corDZ")
+
+# Create Data Objects for Multiple Groups
+dataMZ    <- mxData( observed=mzData, type="raw" )
+dataDZ    <- mxData( observed=dzData, type="raw" )
+
+# Create Expectation Objects for Multiple Groups
+expMZ     <- mxExpectationNormal( covariance="covMZ", means="expMeanMZ", dimnames=selVars )
+expDZ     <- mxExpectationNormal( covariance="covDZ", means="expMeanDZ", dimnames=selVars )
+funML     <- mxFitFunctionML()
+
+# Create Model Objects for Multiple Groups
+modelMZ   <- mxModel( "MZ", expMeanMZ, covMZ, corMZ,dataMZ, expMZ, inclusions, funML )
+modelDZ   <- mxModel( "DZ", expMeanDZ, covDZ, corDZ,dataDZ, expDZ, inclusions, funML )
+multi     <- mxFitFunctionMultigroup( c("MZ","DZ") )
+
+# Create Confidence Interval Objects
+ciCor <- mxCI( c('MZ.corMZ','DZ.corDZ') )
+ciCov     <- mxCI( c('MZ.covMZ','DZ.covDZ') )
+ciMean    <- mxCI( c('MZ.meanMZ','DZ.meanDZ') )
+
+# Build Saturated Model with Confidence Intervals
+modelSAT  <- mxModel( "mulSATc", modelMZ, modelDZ, multi,ciCor, ciMean )
+
+
+# Run Saturated Model
+fitSAT    <- mxTryHard( modelSAT, intervals=F)
+#fit       <- mxTryHard( fitSAT )
+(sumSAT    <- summary( fitSAT ))
+
+
+(corMZ  <- round(cov2cor(fitSAT$MZ$covMZ$values),3))
+(corDZ  <- round(cov2cor(fitSAT$DZ$covDZ$values),3))
+
+
+
+# RUN SUBMODELS
+# test equal means across twin order
+modelSATemo <- mxModel (fitSAT, name="SATemo")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanMZ_mpostWellb_1", "meanMZ_mpostWellb_2"), free=TRUE, values=8, newlabels = "meanMZ_mpostWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanMZ_ppostWellb_1", "meanMZ_ppostWellb_2"), free=TRUE, values=8, newlabels = "meanMZ_ppostWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanDZ_mpostWellb_1", "meanDZ_mpostWellb_2"), free=TRUE, values=8, newlabels = "meanDZ_mpostWellb")
+modelSATemo <- omxSetParameters (modelSATemo, labels=c("meanDZ_ppostWellb_1", "meanDZ_ppostWellb_2"), free=TRUE, values=8, newlabels = "meanDZ_ppostWellb")
+fitSATemo <- mxRun (modelSATemo, intervals = F)
+fitGofs(fitSATemo); fitEsts(fitSATemo)
+mxCompare (fitSAT,fitSATemo)
+
+#test equal means across zygosity
+modelSATemoz <- mxModel (fitSATemo, name="SATemoz")
+modelSATemoz <- omxSetParameters (modelSATemoz, labels=c("meanMZ_mpostWellb","meanDZ_mpostWellb"), free=TRUE, values=8, newlabels = "mean_mpostWellb")
+modelSATemoz <- omxSetParameters (modelSATemoz, labels=c("meanMZ_ppostWellb","meanDZ_ppostWellb"), free=TRUE, values=8, newlabels = "mean_ppostWellb")
+fitSATemoz <- mxRun (modelSATemoz, intervals = T)
+fitGofs(fitSATemoz); fitEsts(fitSATemoz)
+mxCompare (fitSATemo,fitSATemoz)
+
+
+sumCIs <- fitEstCis(fitSATemoz)
+
+meanCIs_post <- sumCIs[(nrow(sumCIs) - 1):nrow(sumCIs), ]
+save(meanCIs_post,file="meanCIs_post.Rda")
+
+#test equal variance across twin order and zygosity
+
+modelSATemvoz <-mxModel(fitSATemoz, name="SATemvoz")
+modelSATemvoz <- omxSetParameters (modelSATemvoz, labels=c("covMZ11","covMZ33","covDZ11","covDZ33"), free=TRUE, values=1.4, newlabels = "v_mpostWellb")
+modelSATemvoz <- omxSetParameters (modelSATemvoz, labels=c("covMZ22","covMZ44","covDZ22","covDZ44"), free=TRUE, values=1.4, newlabels = "v_ppostWellb")
+fitSATemvoz <-mxTryHard (modelSATemvoz, intervals = F)
+mxCompare(fitSATemoz,fitSATemvoz)
+summary(fitSATemvoz)
+
+#test equal same-twin cross-rater covariance across twin order and zygosity
+modelSATstcr <-mxModel(fitSATemvoz, name="SATstcr")
+modelSATstcr <- omxSetParameters (modelSATstcr, labels=c("covMZ21","covMZ43","covDZ21","covDZ43"), free=TRUE, values=.4, newlabels = "c_stcr")
+fitSATstcr <- mxTryHard (modelSATstcr, intervals = F, extraTries = 100)
+mxCompare(fitSATemvoz,fitSATstcr)
+summary(fitSATstcr)
+
+#test equal cross-twin cross-rater covariance across twin order
+modelSATctcr <-mxModel(fitSATstcr, name="SATctcr")
+modelSATctcr <- omxSetParameters(modelSATctcr, labels=c("covMZ41","covMZ32"), free=TRUE, values=.45, newlabels = "c_ctcr_MZ")
+modelSATctcr <- omxSetParameters(modelSATctcr, labels=c("covDZ41","covDZ32"), free=TRUE, values=.5, newlabels = "c_ctcr_DZ")
+fitSATctcr <- mxTryHard (modelSATctcr, intervals = F)
+mxCompare(fitSATemvoz,fitSATctcr)
+summary(fitSATctcr)
+
+# Test Significance of Covariate age
+modelSATCOVa <- mxModel( fitSATctcr, name="SATcova" )
+modelSATCOVa <- omxSetParameters( modelSATCOVa, labels=c("bAge_m","bAge_f"), free=FALSE, values=0 )
+fitSATCOVa <- mxTryHard( modelSATCOVa, intervals = F )
+fitGofs(fitSATCOVa); fitEsts(fitSATCOVa)
+
+
+# Test Significance of Covariate sex
+modelSATCOVs <- mxModel( fitSATctcr, name="SATcovs" )
+modelSATCOVs <- omxSetParameters( modelSATCOVs, labels=c('bSex_m','bSex_f'), free=FALSE, values=0 )
+fitSATCOVs <- mxTryHard( modelSATCOVs, intervals = F )
+fitGofs(fitSATCOVs); fitEsts(fitSATCOVs)
+
+mxCompare( fitSATctcr, subs <- list( fitSATCOVa, fitSATCOVs) )
+
+# Constrain age covariate to be equal across parental raters
+modelSATEbage <- mxModel( fitSATctcr, name="SATebage" )
+modelSATEbage <- omxSetParameters( modelSATEbage, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitSATEbage <- mxTryHard(modelSATEbage, intervals = F)
+fitGofs(fitSATEbage); fitEsts(fitSATEbage)
+mxCompare (fitSATctcr,fitSATEbage)
+
+# Constrain sex covariate to be equal across parental raters
+modelSATEbsex <- mxModel( fitSATctcr, name="SATebsex" )
+modelSATEbsex <- omxSetParameters( modelSATEbsex, label=c("bSex_m","bSex_f"), free=TRUE, values=.06, newlabels='bSex' )
+fitSATEbsex <- mxTryHard(modelSATEbsex, intervals = F, extraTries = 30)
+fitGofs(fitSATEbsex); fitEsts(fitSATEbsex)
+mxCompare (fitSATctcr,fitSATEbsex)
+
+# Constrain both covariate to be equal across parental raters
+modelSATEcov <- mxModel( fitSATEbsex, name="SATecov" )
+modelSATEcov <- omxSetParameters( modelSATEcov, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitSATEcov <- mxRun(modelSATEcov, intervals = F)
+fitGofs(fitSATEcov); fitEsts(fitSATEcov)
+
+mxCompare( fitSATctcr, subs <- list( fitSATCOVa, fitSATCOVs, fitSATEbage, fitSATEbsex, fitSATEcov ) )
+
+
+#Print correlations based on most parsimonious model
+
+(corMZ  <- round(cov2cor(fitSATEcov$MZ$covMZ$values),3))
+(corDZ  <- round(cov2cor(fitSATEcov$DZ$covDZ$values),3))
+
+######################################################################
+#The Pscyhometric ACE model starts here
+
+# Generate Descriptive Statistics
+colMeans(mzData,na.rm=TRUE)
+colMeans(dzData,na.rm=TRUE)
+cov(mzData,use="complete")
+cov(dzData,use="complete")
+# Set Starting Values
+
+svPa <- .4 # start value for path coefficient
+svPe <- .2 # start value for path coefficient for e
+
+# ----------------------------------------------------------------------------------------------------------------------
+# PREPARE ACE MODEL
+# Create Matrices for Covariates and linear Regression Coefficients
+# Independent variables
+defSex      <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE, 
+                         labels=c('data.sex_1','data.sex_1','data.sex_2','data.sex_2'), name="Sex" )
+
+defAge    <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=FALSE,
+                       labels=c("data.mpostAge_1", "data.ppostAge_1", "data.mpostAge_2", "data.ppostAge_2" ), name="Age" )
+
+# Regression Coefficients. Note there must be a beta for each trait. Note: True or False depend on test above
+pathB2     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, 
+                        values=0.1, label=c('bSex_m','bSex_f','bSex_m','bSex_f'), name="b2" ) # Sex effects 
+
+pathB1     <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE,
+                        values=0.1, label=c("bAge_m","bAge_f","bAge_m","bAge_f"), name="b1" ) # age effects
+
+
+# (this needs to move) Create Algebra for expected Mean Matrices
+meanG <- mxMatrix( type="Full", nrow=1, ncol=ntv, free=TRUE, values=svMe, labels=labVars("mean",selVars), name="meanG" )
+expMean <- mxAlgebra( meanG + Sex*b2 + Age*b1, name="expMeanG")
+
+
+## For the agreement:
+
+# Create Matrices for Agreement (latent) Variance Components, i.e. PSY
+covA <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11", name="VA" )
+covC <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11", name="VC" )
+covE <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11", name="VE" )
+
+
+# Create Algebra for latent Variance/Covariance Matrices in MZ & DZ twins
+covP  <- mxAlgebra( expression= VA+VC+VE, name="V" )
+covMZ <- mxAlgebra( expression= VA+VC, name="cMZ" )
+covDZ <- mxAlgebra( expression= 0.5%x%VA+ VC, name="cDZ" )
+PsyMZ <- mxAlgebra( expression= rbind( cbind(V, cMZ), cbind(t(cMZ), V)), name="PsyMZ" )
+PsyDZ <- mxAlgebra( expression= rbind( cbind(V, cDZ), cbind(t(cDZ), V)), name="PsyDZ" )
+
+### Here we specify the loadings of the latent "agreement" variable on the observed variables ###
+Lambda <- mxMatrix(type="Full", nrow=ntv, ncol=nfact, free=F,values=c(1,0,
+                                                                      1,0,
+                                                                      0,1,
+                                                                      0,1), labels=c('x',NA,
+                                                                                     'x',NA,
+                                                                                     NA,'x',
+                                                                                     NA,'x'), byrow=T, name="Lambda")
+
+
+## For MOTHERS DISAGREEMENT
+
+# Create Matrices for Variance Components
+VAm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11m", name="VAm" )
+VCm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11m", name="VCm" )
+VEm <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11m", name="VEm" )
+
+# Create Algebra for maternal Variance/Covariance Matrices in MZ & DZ twins
+Vm <- mxAlgebra( expression= VAm+VCm+VEm, name="Vm" )
+cMZm <- mxAlgebra( expression= VAm+VCm, name="cMZm" )
+cDZm <- mxAlgebra( expression= 0.5%x%VAm+ VCm, name="cDZm" )
+
+
+## For FATHERS DISAGREEMENT
+
+# Create Matrices for Variance Components
+VAf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VA11f", name="VAf" )
+VCf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VC11f", name="VCf" )
+VEf <- mxMatrix( type="Symm", nrow=nphen, ncol=nphen, free=TRUE, values=svPa, label="VE11f", name="VEf" )
+
+# Create Algebra for paternal Variance/Covariance Matrices in MZ & DZ twins
+Vf <- mxAlgebra( expression= VAf+VCf+VEf, name="Vf" )
+cMZf <- mxAlgebra( expression= VAf+VCf, name="cMZf" )
+cDZf <- mxAlgebra( expression= 0.5%x%VAf+ VCf, name="cDZf" )
+
+
+### Here we specify the residual matrix for MZ twins ### Dit is dus theta. 
+ThetaMZ <- mxAlgebra(rbind(cbind(Vm    ,null  ,cMZm  ,null),
+                           cbind(null  ,Vf    ,null  ,cMZf),
+                           cbind(cMZm  ,null  ,Vm    ,null),
+                           cbind(null  ,cMZf  ,null  ,Vf)), name="ThetaMZ")
+
+### Here we specify the residual matrix for DZ twins ###  
+ThetaDZ <- mxAlgebra(rbind(cbind(Vm    ,null  ,cDZm  ,null),
+                           cbind(null  ,Vf    ,null  ,cDZf),
+                           cbind(cDZm  ,null  ,Vm    ,null),
+                           cbind(null  ,cDZf  ,null  ,Vf)), name="ThetaDZ")  
+
+null <- mxMatrix( type="Lower", nrow=nphen, ncol=nphen, free=FALSE, values=0, label=c("zero"), name="null" )
+
+### Here we specify the total expected covariance, both agreement and disagreement for MZ's and then DZ's ###  
+
+expCovMZ  <- mxAlgebra( expression=Lambda%*%PsyMZ%*%t(Lambda)+ThetaMZ,name="expCovMZ")
+
+expCovDZ  <- mxAlgebra( expression=Lambda%*%PsyDZ%*%t(Lambda)+ThetaDZ,name="expCovDZ")
+
+
+# Create Data Objects for Multiple Groups
+dataMZ <- mxData( observed=mzData, type="raw" )
+dataDZ <- mxData( observed=dzData, type="raw" )
+
+# Create Expectation Objects for Multiple Groups
+expMZ <- mxExpectationNormal( covariance="expCovMZ", means="expMeanG", dimnames=selVars )
+expDZ <- mxExpectationNormal( covariance="expCovDZ", means="expMeanG", dimnames=selVars )
+funML <- mxFitFunctionML()
+
+# Create Model Objects for Multiple Groups
+mother <- list (VAm, VCm, VEm, Vm, cMZm, cDZm)
+father <- list (VAf, VCf, VEf, Vf, cMZf, cDZf)
+pars <- list( pathB1, pathB2, meanG, covA, covC, covE, covP, Lambda )
+defs <- list( defAge, defSex )
+modelMZ <- mxModel( pars, defs, expMean, covMZ, expCovMZ, dataMZ, expMZ, ThetaMZ, PsyMZ, funML, mother, father, null, name="MZ" )
+modelDZ <- mxModel( pars, defs, expMean, covDZ, expCovDZ, dataDZ, expDZ, ThetaDZ, PsyDZ, funML, mother, father, null, name="DZ" )
+multi <- mxFitFunctionMultigroup( c("MZ","DZ") )
+
+# Create Algebra for Variance Components
+rowUS <- rep('US',nphen)
+colUS <- rep(c('VA','VC','VE','SA','SC','SE'),each=nphen)
+estUS <- mxAlgebra( expression=cbind(VA,VC,VE,VA/V,VC/V,VE/V), name="US", dimnames=list(rowUS,colUS) )
+# Create Confidence Interval Objects
+ciACE <- mxCI( "US[1,1:6]" )
+
+rowSm <- rep('Sm',nphen)
+colSm <- rep(c('VAm','VCm','VEm','SAm','SCm','SEm'),each=nphen)
+estSm <- mxAlgebra( expression=cbind(VAm,VCm,VEm,VAm/Vm,VCm/Vm,VEm/Vm), name="Sm", dimnames=list(rowSm,colSm) )
+ciACEm <- mxCI( "Sm[1,1:6]" )
+
+rowSf <- rep('Sf',nphen)
+colSf <- rep(c('VAf','VCf','VEf','SAf','SCf','SEf'),each=nphen)
+estSf <- mxAlgebra( expression=cbind(VAf,VCf,VEf,VAf/Vf,VCf/Vf,VEf/Vf), name="Sf", dimnames=list(rowSf,colSf) )
+ciACEf <- mxCI( "Sf[1,1:6]" )
+
+comps <- list(estUS, ciACE, estSm, ciACEm, estSf, ciACEf)
+
+# Build Model with Confidence Intervals
+modelPsych <- mxModel( "PsychACE", pars, modelMZ, modelDZ, mother, father, multi, comps)
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN MODEL
+# Run ACE Model
+fitPsych <- mxTryHard( modelPsych, intervals=T )
+sumPsych <- summary( fitPsych )
+sumPsych
+
+
+# Print Goodness-of-fit Statistics & Parameter Estimates
+fitGofs(fitPsych); fitEsts(fitPsych)
+sumCIs <- fitEstCis(fitPsych)
+sumCIs
+
+#store estimate in a dataframe
+psychCIdf_post <- data.frame(variable = rep(NA,18),rater = c(rep("agreement",6),rep("Umother",6),rep("Ufather",6)), period = rep("post",18), sumCIs)
+psychCIdf_post$variable <-c(paste("post",colUS,sep="_"), paste("post",colSm,sep="_"),paste("post",colSf,sep="_"))
+
+save(psychCIdf_post,file="psychCIdf_post.Rda")
+
+
+
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# RUN SUBMODELS
+
+modelPsychem <- mxModel (fitPsych, name="Psychem")
+modelPsychem <- omxSetParameters (modelPsychem, labels=c("meanmpostWellb_1", "meanmpostWellb_2"), free=TRUE, values=8, newlabels = "meanmpostWellb")
+modelPsychem <- omxSetParameters (modelPsychem, labels=c("meanppostWellb_1", "meanppostWellb_2"), free=TRUE, values=8, newlabels = "meanppostWellb")
+fitPsychem <- mxRun (modelPsychem, intervals = F)
+fitGofs(fitPsychem); fitEsts(fitPsychem)
+mxCompare (fitPsych,fitPsychem)
+
+# Test Significance of Covariate age
+modelCOVa <- mxModel( fitPsych, name="Psychcova" )
+modelCOVa <- omxSetParameters( modelCOVa, labels=c("bAge_m","bAge_f"), free=FALSE, values=0 )
+fitCOVa <- mxRun( modelCOVa, intervals = F )
+fitGofs(fitCOVa); fitEsts(fitCOVa)
+
+
+# Test Significance of Covariate sex
+modelCOVs <- mxModel( fitPsych, name="Psychcovs" )
+modelCOVs <- omxSetParameters( modelCOVs, labels=c('bSex_m','bSex_f'), free=FALSE, values=0 )
+fitCOVs <- mxTryHard( modelCOVs, intervals = F )
+fitGofs(fitCOVs); fitEsts(fitCOVs)
+
+mxCompare( fitPsych, subs <- list( fitCOVa, fitCOVs) )
+
+# Constrain age covariate to be equal across parental raters
+modelEbage <- mxModel( fitPsych, name="Psychebage" )
+modelEbage <- omxSetParameters( modelEbage, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitEbage <- mxRun(modelEbage, intervals = F)
+fitGofs(fitEbage); fitEsts(fitEbage)
+mxCompare (fitPsych,fitEbage)
+
+# Constrain sex covariate to be equal across parental raters
+modelEbsex <- mxModel( fitPsych, name="Psychebsex" )
+modelEbsex <- omxSetParameters( modelEbsex, label=c("bSex_m","bSex_f"), free=TRUE, values=.06, newlabels='bSex' )
+fitEbsex <- mxTryHard(modelEbsex, intervals = F)
+fitGofs(fitEbsex); fitEsts(fitEbsex)
+mxCompare (fitPsych,fitEbsex)
+
+# Constrain both covariate to be equal across parental raters
+modelEcov <- mxModel( fitEbsex, name="Psychecov" )
+modelEcov <- omxSetParameters( modelEcov, label=c("bAge_m","bAge_f"), free=TRUE, values=-.001, newlabels='bAge' )
+fitEcov <- mxRun(modelEcov, intervals = F)
+fitGofs(fitEcov); fitEsts(fitEcov)
+
+# Add equal means
+
+modelPsychemcov <- mxModel (fitEcov, name="Psychemcov")
+modelPsychemcov <- omxSetParameters (modelPsychemcov, labels=c("meanmpostWellb_1", "meanmpostWellb_2"), free=TRUE, values=8, newlabels = "meanmpostWellb")
+modelPsychemcov <- omxSetParameters (modelPsychemcov, labels=c("meanppostWellb_1", "meanppostWellb_2"), free=TRUE, values=8, newlabels = "meanppostWellb")
+fitPsychemcov <- mxRun (modelPsychemcov, intervals = F)
+fitGofs(fitPsychemcov); fitEsts(fitPsychemcov)
+mxCompare (fitPsych,fitPsychemcov)
+
+mxCompare( fitPsych, subs <- list( fitCOVa, fitCOVs, fitEbage, fitEbsex, fitEcov, fitPsychemcov ) )
+
+sink()
+#save.image(paste(filename,".Ri",sep=""))
+
+```
+
+# merge data from 4 waves and plot results
+
+```{r}
+load("psychCIdf_pre.Rda")
+load("psychCIdf_lock.Rda")
+load("psychCIdf_dis.Rda")
+load("psychCIdf_post.Rda")
+
+psychCIdf_pre$variable <-c(colUS,colSm,colSf)
+psychCIdf_lock$variable <-c(colUS,colSm,colSf)
+psychCIdf_dis$variable <-c(colUS,colSm,colSf)
+psychCIdf_post$variable <-c(colUS,colSm,colSf)
+
+mer_est <- rbind(psychCIdf_pre,psychCIdf_lock,psychCIdf_dis,psychCIdf_post)
+
+
+library(ggplot2)
+
+# Filter data by rows where "variable" is "VA"
+mer_est_VA <- subset(mer_est, variable == "VA")
+mer_est_VA$period_order <- factor(mer_est_VA$period, levels = c("pre", "lock", "dis", "post"))
+# Create plot using ggplot
+ggplot(mer_est_VA, aes(x = period_order, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.2) +
+  labs(x = "Period", y = "Estimate", title = "Agreement VA per wave") +
+  theme_minimal()
+
+
+# Filter data by rows where "variable" is "VC"
+mer_est_VC <- subset(mer_est, variable == "VC")
+mer_est_VC$period_order <- factor(mer_est_VC$period, levels = c("pre", "lock", "dis", "post"))
+# Create plot using ggplot
+ggplot(mer_est_VC, aes(x = period_order, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.2) +
+  labs(x = "Period", y = "Estimate", title = "Agreement VC per wave") +
+  theme_minimal()
+
+
+# Filter data by rows where "variable" is "VE"
+mer_est_VE <- subset(mer_est, variable == "VE")
+mer_est_VE$period_order <- factor(mer_est_VE$period, levels = c("pre", "lock", "dis", "post"))
+# Create plot using ggplot
+ggplot(mer_est_VE, aes(x = period_order, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.2) +
+  labs(x = "Period", y = "Estimate", title = "Agreement VE per wave") +
+  theme_minimal()
+
+# Filter data by rows where "variable" is "VAm"
+mer_est_VAm <- subset(mer_est, variable == "VAm")
+mer_est_VAm$period_order <- factor(mer_est_VAm$period, levels = c("pre", "lock", "dis", "post"))
+# Create plot using ggplot
+ggplot(mer_est_VAm, aes(x = period_order, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.2) +
+  labs(x = "Period", y = "Estimate", title = "VAm per wave") +
+  theme_minimal()
+
+
+# Filter data by rows where "variable" is "VCm"
+mer_est_VCm <- subset(mer_est, variable == "VCm")
+mer_est_VCm$period_order <- factor(mer_est_VCm$period, levels = c("pre", "lock", "dis", "post"))
+# Create plot using ggplot
+ggplot(mer_est_VCm, aes(x = period_order, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.2) +
+  labs(x = "Period", y = "Estimate", title = "VCm per wave") +
+  theme_minimal()
+
+# Filter data by rows where "variable" is "VEm"
+mer_est_VEm <- subset(mer_est, variable == "VEm")
+mer_est_VEm$period_order <- factor(mer_est_VEm$period, levels = c("pre", "lock", "dis", "post"))
+# Create plot using ggplot
+ggplot(mer_est_VEm, aes(x = period_order, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.2) +
+  labs(x = "Period", y = "Estimate", title = "VEm per wave") +
+  theme_minimal()
+
+# Filter data by rows where "variable" is "VAf"
+mer_est_VAf <- subset(mer_est, variable == "VAf")
+mer_est_VAf$period_order <- factor(mer_est_VAf$period, levels = c("pre", "lock", "dis", "post"))
+# Create plot using ggplot
+ggplot(mer_est_VAf, aes(x = period_order, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.2) +
+  labs(x = "Period", y = "Estimate", title = "VAf per wave") +
+  theme_minimal()
+
+# Filter data by rows where "variable" is "VCf"
+mer_est_VCf <- subset(mer_est, variable == "VCf")
+mer_est_VCf$period_order <- factor(mer_est_VCf$period, levels = c("pre", "lock", "dis", "post"))
+# Create plot using ggplot
+ggplot(mer_est_VCf, aes(x = period_order, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.2) +
+  labs(x = "Period", y = "Estimate", title = "VCf per wave") +
+  theme_minimal()
+
+
+# Filter data by rows where "variable" is "VEf"
+mer_est_VEf <- subset(mer_est, variable == "VEf")
+mer_est_VEf$period_order <- factor(mer_est_VEf$period, levels = c("pre", "lock", "dis", "post"))
+# Create plot using ggplot
+ggplot(mer_est_VEf, aes(x = period_order, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.2) +
+  labs(x = "Period", y = "Estimate", title = "VEf per wave") +
+  theme_minimal()
+
+# # Create a subset of the data with only rows where "variable" is "VA"
+# VA_data <- subset(mer_est, variable == "VA")
+# 
+# # Create a new column to map the periods to the desired order
+# VA_data$period_order <- factor(VA_data$period, levels = c("pre", "lock", "dis", "post"))
+# 
+# # Plot the data with ggplot
+# ggplot(VA_data, aes(x = period_order, y = estimate)) +
+#   geom_point() +   # Add the point layer
+#   geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.1) +  # Add the error bar layer
+#   labs(x = "Period", y = "Estimate")  # Add axis labels
+
+
+
+
+
+load("meanCIs_pre.Rda")
+load("meanCIs_lock.Rda")
+load("meanCIs_dis.Rda")
+load("meanCIs_post.Rda")
+
+mer_meanCIest <- rbind(meanCIs_pre,meanCIs_lock,meanCIs_dis,meanCIs_post)
+mer_meanCIest <- as.data.frame(mer_meanCIest)
+
+
+mer_meanCIest$rn <- row.names(mer_meanCIest) 
+mer_meanCIest$rater <- ifelse(grepl("^mean_m", mer_meanCIest$rn), "mother", ifelse(grepl("^mean_p", mer_meanCIest$rn), "father", NA))
+
+mer_meanCIest$period <- NA
+mer_meanCIest$period[grepl("pre", mer_meanCIest$rn)] <- "pre"
+mer_meanCIest$period[grepl("lock", mer_meanCIest$rn)] <- "lock"
+mer_meanCIest$period[grepl("dis", mer_meanCIest$rn)] <- "dis"
+mer_meanCIest$period[grepl("post", mer_meanCIest$rn)] <- "post"
+
+
+ggplot(mer_meanCIest, aes(x = period, y = estimate, group = rater, color = rater)) +
+  geom_line() +
+  geom_point() +
+  geom_errorbar(aes(ymin = lbound, ymax = ubound), width = 0.25) +
+  labs(title = "Line Graph with Error Bars",
+       x = "Period",
+       y = "Estimate") +
+  theme_minimal() +
+  scale_y_continuous(limits = c(7, 10))  # Set the maximum y-axis value to 10
+
+```
+
+
+
+
